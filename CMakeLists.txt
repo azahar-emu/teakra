@@ -19,7 +19,7 @@ cmake_dependent_option(TEAKRA_BUILD_UNIT_TESTS "Build unit tests" "${MASTER_PROJ
 option(TEAKRA_RUN_TESTS "Run Teakra accuracy tests" OFF)
 
 # Set hard requirements for C++
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
