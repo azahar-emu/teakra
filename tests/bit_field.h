@@ -37,6 +37,7 @@
 #include <type_traits>
 
 #include "common_funcs.h"
+#include "../src/swap.h"
 
 /*
  * Abstract bitfield class

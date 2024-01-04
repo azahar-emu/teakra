@@ -8,6 +8,7 @@ namespace Teakra {
 
 class MemoryInterface;
 struct RegisterState;
+class Interpreter;
 
 class Processor {
 public:
@@ -20,6 +21,7 @@ public:
 
     RegisterState& GetRegisterState();
     const RegisterState& GetRegisterState() const;
+    Interpreter& Interp();
 
 private:
     struct Impl;

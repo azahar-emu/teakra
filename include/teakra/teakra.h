@@ -27,11 +27,14 @@ struct UserConfig {
 
 static constexpr std::uint32_t DspMemorySize = 0x80000;
 
+class Processor;
+
 class Teakra {
 public:
     Teakra(const UserConfig& config);
     ~Teakra();
 
+    Processor& GetProcessor();
     void Reset();
 
     uint8_t* GetDspMemory();

@@ -9,6 +9,7 @@ add_library(teakra
     apbp.cpp
     apbp.h
     bit.h
+    bit_field.h
     btdmp.cpp
     btdmp.h
     common_types.h
@@ -24,6 +25,8 @@ add_library(teakra
     matcher.h
     memory_interface.cpp
     memory_interface.h
+    memory_pool.cpp
+    memory_pool.h
     mmio.cpp
     mmio.h
     operand.h
@@ -31,15 +34,29 @@ add_library(teakra
     processor.cpp
     processor.h
     shared_memory.h
+    swap.h
     teakra.cpp
     test.h
     test_generator.cpp
     test_generator.h
+    jit.h jit.cpp
+    xbyak_abi.h
+    ir/basic_block.cpp
+    ir/basic_block.h
+    ir/ir_emitter.cpp
+    ir/ir_emitter.h
+    ir/microinstruction.cpp
+    ir/microinstruction.h
+    ir/value.cpp
+    ir/value.h
+    ir/opcode.h
+    jit_no_ir.cpp
+    jit_no_ir.h
 )
 
 create_target_directory_groups(teakra)
 
-target_link_libraries(teakra PRIVATE Threads::Threads)
+target_link_libraries(teakra PRIVATE Threads::Threads mcl xbyak::xbyak)
 target_include_directories(teakra
                            PUBLIC
                             "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
