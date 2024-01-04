@@ -72,6 +72,10 @@ void Teakra::Reset() {
     impl->Reset();
 }
 
+Processor& Teakra::GetProcessor() {
+    return impl->processor;
+}
+
 uint8_t* Teakra::GetDspMemory() {
     return impl->shared_memory.raw;
 }

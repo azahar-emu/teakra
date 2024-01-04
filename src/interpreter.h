@@ -8,7 +8,6 @@
 #include <utility>
 #include "bit.h"
 #include "core_timing.h"
-#include "crash.h"
 #include "decoder.h"
 #include "memory_interface.h"
 #include "operand.h"
@@ -59,6 +58,18 @@ public:
         UNREACHABLE();
     }
 
+    void CheckInterrupt() {
+        for (std::size_t i = 0; i < 3; ++i) {
+            if (interrupt_pending[i].exchange(false)) {
+                regs.ip[i] = 1;
+            }
+        }
+
+        if (vinterrupt_pending.exchange(false)) {
+            regs.ipv = 1;
+        }
+    }
+
     void Run(u64 cycles) {
         idle = false;
         for (u64 i = 0; i < cycles; ++i) {
@@ -73,15 +84,7 @@ public:
                 }
             }
 
-            for (std::size_t i = 0; i < 3; ++i) {
-                if (interrupt_pending[i].exchange(false)) {
-                    regs.ip[i] = 1;
-                }
-            }
-
-            if (vinterrupt_pending.exchange(false)) {
-                regs.ipv = 1;
-            }
+            CheckInterrupt();
 
             //std::printf("PC 0x%x\n", regs.pc);
             u16 opcode = mem.ProgramRead((regs.pc++) | (regs.prpage << 18));
@@ -3008,28 +3011,70 @@ private:
         return value;
     }
 
+public:
+    std::unordered_map<std::string, u32> read_count;
+
     u16 RegToBus16(RegName reg, bool enable_sat_for_mov = false) {
         switch (reg) {
         case RegName::a0:
+            read_count["a0"]++;
+            return GetAcc(reg) & 0xFFFF;
         case RegName::a1:
+            read_count["a1"]++;
+            return GetAcc(reg) & 0xFFFF;
         case RegName::b0:
+            read_count["b0"]++;
+            return GetAcc(reg) & 0xFFFF;
         case RegName::b1:
             // get aXl, but unlike using RegName::aXl, this does never saturate.
             // This only happen to insturctions using "Register" operand,
             // and doesn't apply to all instructions. Need test and special check.
+            read_count["b1"]++;
             return GetAcc(reg) & 0xFFFF;
         case RegName::a0l:
+            read_count["a0l"]++;
+            if (enable_sat_for_mov) {
+                return GetAndSatAcc(reg) & 0xFFFF;
+            }
+            return GetAcc(reg) & 0xFFFF;
         case RegName::a1l:
+            read_count["a1l"]++;
+            if (enable_sat_for_mov) {
+                return GetAndSatAcc(reg) & 0xFFFF;
+            }
+            return GetAcc(reg) & 0xFFFF;
         case RegName::b0l:
+            read_count["b0l"]++;
+            if (enable_sat_for_mov) {
+                return GetAndSatAcc(reg) & 0xFFFF;
+            }
+            return GetAcc(reg) & 0xFFFF;
         case RegName::b1l:
+            read_count["b1l"]++;
             if (enable_sat_for_mov) {
                 return GetAndSatAcc(reg) & 0xFFFF;
             }
             return GetAcc(reg) & 0xFFFF;
         case RegName::a0h:
+            read_count["a0h"]++;
+            if (enable_sat_for_mov) {
+                return (GetAndSatAcc(reg) >> 16) & 0xFFFF;
+            }
+            return (GetAcc(reg) >> 16) & 0xFFFF;
         case RegName::a1h:
+            read_count["a1h"]++;
+            if (enable_sat_for_mov) {
+                return (GetAndSatAcc(reg) >> 16) & 0xFFFF;
+            }
+            return (GetAcc(reg) >> 16) & 0xFFFF;
         case RegName::b0h:
+            read_count["b0h"]++;
+            if (enable_sat_for_mov) {
+                return (GetAndSatAcc(reg) >> 16) & 0xFFFF;
+            }
+            return (GetAcc(reg) >> 16) & 0xFFFF;
         case RegName::b1h:
+            read_count["b1h"]++;
             if (enable_sat_for_mov) {
                 return (GetAndSatAcc(reg) >> 16) & 0xFFFF;
             }
@@ -3041,87 +3086,122 @@ private:
             UNREACHABLE();
 
         case RegName::r0:
+            read_count["r0"]++;
             return regs.r[0];
         case RegName::r1:
+            read_count["r1"]++;
             return regs.r[1];
         case RegName::r2:
+            read_count["r2"]++;
             return regs.r[2];
         case RegName::r3:
+            read_count["r3"]++;
             return regs.r[3];
         case RegName::r4:
+            read_count["r4"]++;
             return regs.r[4];
         case RegName::r5:
+            read_count["r5"]++;
             return regs.r[5];
         case RegName::r6:
+            read_count["r6"]++;
             return regs.r[6];
         case RegName::r7:
+            read_count["r7"]++;
             return regs.r[7];
 
         case RegName::y0:
+            read_count["y0"]++;
             return regs.y[0];
         case RegName::p:
             // This only happen to insturctions using "Register" operand,
             // and doesn't apply to all instructions. Need test and special check.
+            read_count["p"]++;
             return (ProductToBus40(Px{0}) >> 16) & 0xFFFF;
 
         case RegName::pc:
             UNREACHABLE();
         case RegName::sp:
+            read_count["sp"]++;
             return regs.sp;
         case RegName::sv:
+            read_count["sv"]++;
             return regs.sv;
         case RegName::lc:
+            read_count["lc"]++;
             return regs.Lc();
 
         case RegName::ar0:
+            read_count["ar0"]++;
             return regs.Get<ar0>();
         case RegName::ar1:
+            read_count["ar1"]++;
             return regs.Get<ar1>();
 
         case RegName::arp0:
+            read_count["arp0"]++;
             return regs.Get<arp0>();
         case RegName::arp1:
+            read_count["arp1"]++;
             return regs.Get<arp1>();
         case RegName::arp2:
+            read_count["arp2"]++;
             return regs.Get<arp2>();
         case RegName::arp3:
+            read_count["arp3"]++;
             return regs.Get<arp3>();
 
         case RegName::ext0:
+            read_count["ext0"]++;
             return regs.ext[0];
         case RegName::ext1:
+            read_count["ext1"]++;
             return regs.ext[1];
         case RegName::ext2:
+            read_count["ext2"]++;
             return regs.ext[2];
         case RegName::ext3:
+            read_count["ext3"]++;
             return regs.ext[3];
 
         case RegName::stt0:
+            read_count["stt0"]++;
             return regs.Get<stt0>();
         case RegName::stt1:
+            read_count["stt1"]++;
             return regs.Get<stt1>();
         case RegName::stt2:
+            read_count["stt2"]++;
             return regs.Get<stt2>();
 
         case RegName::st0:
+            read_count["st0"]++;
             return regs.Get<st0>();
         case RegName::st1:
+            read_count["st1"]++;
             return regs.Get<st1>();
         case RegName::st2:
+            read_count["st2"]++;
             return regs.Get<st2>();
 
         case RegName::cfgi:
+            read_count["cfgi"]++;
             return regs.Get<cfgi>();
         case RegName::cfgj:
+            read_count["cfgj"]++;
             return regs.Get<cfgj>();
 
         case RegName::mod0:
+            read_count["mod0"]++;
             return regs.Get<mod0>();
         case RegName::mod1:
+            read_count["mod1"]++;
             return regs.Get<mod1>();
         case RegName::mod2:
+            read_count["mod2"]++;
             return regs.Get<mod2>();
         case RegName::mod3:
+            read_count["mod3"]++;
             return regs.Get<mod3>();
         default:
             UNREACHABLE();
@@ -3180,13 +3260,24 @@ private:
         SetAccFlag(value);
         SetAcc(name, value);
     }
+    std::unordered_map<std::string, u32> write_count;
 
     void RegFromBus16(RegName reg, u16 value) {
         switch (reg) {
         case RegName::a0:
+            write_count["a0"]++;
+            SatAndSetAccAndFlag(reg, SignExtend<16, u64>(value));
+            break;
         case RegName::a1:
+            write_count["a1"]++;
+            SatAndSetAccAndFlag(reg, SignExtend<16, u64>(value));
+            break;
         case RegName::b0:
+            write_count["b0"]++;
+            SatAndSetAccAndFlag(reg, SignExtend<16, u64>(value));
+            break;
         case RegName::b1:
+            write_count["b1"]++;
             SatAndSetAccAndFlag(reg, SignExtend<16, u64>(value));
             break;
         case RegName::a0l:
@@ -3196,9 +3287,19 @@ private:
             SatAndSetAccAndFlag(reg, (u64)value);
             break;
         case RegName::a0h:
+            write_count["a0h"]++;
+            SatAndSetAccAndFlag(reg, SignExtend<32, u64>(value << 16));
+            break;
         case RegName::a1h:
+            write_count["a1h"]++;
+            SatAndSetAccAndFlag(reg, SignExtend<32, u64>(value << 16));
+            break;
         case RegName::b0h:
+            write_count["b0h"]++;
+            SatAndSetAccAndFlag(reg, SignExtend<32, u64>(value << 16));
+            break;
         case RegName::b1h:
+            write_count["b1h"]++;
             SatAndSetAccAndFlag(reg, SignExtend<32, u64>(value << 16));
             break;
         case RegName::a0e:
@@ -3208,34 +3309,44 @@ private:
             UNREACHABLE();
 
         case RegName::r0:
+            write_count["r0"]++;
             regs.r[0] = value;
             break;
         case RegName::r1:
+            write_count["r1"]++;
             regs.r[1] = value;
             break;
         case RegName::r2:
+            write_count["r2"]++;
             regs.r[2] = value;
             break;
         case RegName::r3:
+            write_count["r3"]++;
             regs.r[3] = value;
             break;
         case RegName::r4:
+            write_count["r4"]++;
             regs.r[4] = value;
             break;
         case RegName::r5:
+            write_count["r5"]++;
             regs.r[5] = value;
             break;
         case RegName::r6:
+            write_count["r6"]++;
             regs.r[6] = value;
             break;
         case RegName::r7:
+            write_count["r7"]++;
             regs.r[7] = value;
             break;
 
         case RegName::y0:
+            write_count["y0"]++;
             regs.y[0] = value;
             break;
         case RegName::p: // p0h
+            write_count["p"]++;
             regs.pe[0] = value > 0x7FFF;
             regs.p[0] = (regs.p[0] & 0xFFFF) | (value << 16);
             break;
@@ -3243,32 +3354,41 @@ private:
         case RegName::pc:
             UNREACHABLE();
         case RegName::sp:
+            write_count["sp"]++;
             regs.sp = value;
             break;
         case RegName::sv:
+            write_count["sv"]++;
             regs.sv = value;
             break;
         case RegName::lc:
+            write_count["lc"]++;
             regs.Lc() = value;
             break;
 
         case RegName::ar0:
+            write_count["ar0"]++;
             regs.Set<ar0>(value);
             break;
         case RegName::ar1:
+            write_count["ar1"]++;
             regs.Set<ar1>(value);
             break;
 
         case RegName::arp0:
+            write_count["arp0"]++;
             regs.Set<arp0>(value);
             break;
         case RegName::arp1:
+            write_count["arp1"]++;
             regs.Set<arp1>(value);
             break;
         case RegName::arp2:
+            write_count["arp2"]++;
             regs.Set<arp2>(value);
             break;
         case RegName::arp3:
+            write_count["arp3"]++;
             regs.Set<arp3>(value);
             break;
 
@@ -3286,42 +3406,54 @@ private:
             break;
 
         case RegName::stt0:
+            write_count["stt0"]++;
             regs.Set<stt0>(value);
             break;
         case RegName::stt1:
+            write_count["stt1"]++;
             regs.Set<stt1>(value);
             break;
         case RegName::stt2:
+            write_count["stt2"]++;
             regs.Set<stt2>(value);
             break;
 
         case RegName::st0:
+            write_count["st0"]++;
             regs.Set<st0>(value);
             break;
         case RegName::st1:
+            write_count["st1"]++;
             regs.Set<st1>(value);
             break;
         case RegName::st2:
+            write_count["st2"]++;
             regs.Set<st2>(value);
             break;
 
         case RegName::cfgi:
+            write_count["cfgi"]++;
             regs.Set<cfgi>(value);
             break;
         case RegName::cfgj:
+            write_count["cfgj"]++;
             regs.Set<cfgj>(value);
             break;
 
         case RegName::mod0:
+            write_count["mod0"]++;
             regs.Set<mod0>(value);
             break;
         case RegName::mod1:
+            write_count["mod1"]++;
             regs.Set<mod1>(value);
             break;
         case RegName::mod2:
+            write_count["mod2"]++;
             regs.Set<mod2>(value);
             break;
         case RegName::mod3:
+            write_count["mod3"]++;
             regs.Set<mod3>(value);
             break;
         default:
@@ -3496,7 +3628,6 @@ private:
 
         if (s == 0)
             return address;
-
         if (!dmod && !regs.br[unit] && regs.m[unit]) {
             u16 mod = unit < 4 ? regs.modi : regs.modj;
 
@@ -3567,6 +3698,8 @@ private:
         }
         return address;
     }
+
+    std::vector<u64> values;
 
     u16 RnAndModify(unsigned unit, StepValue step, bool dmod = false) {
         u16 ret = regs.r[unit];
