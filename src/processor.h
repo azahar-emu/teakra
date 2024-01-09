@@ -21,7 +21,6 @@ public:
 
     RegisterState& GetRegisterState();
     const RegisterState& GetRegisterState() const;
-    Interpreter& Interp();
 
 private:
     struct Impl;
