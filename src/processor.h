@@ -12,15 +12,16 @@ class Interpreter;
 
 class Processor {
 public:
-    Processor(CoreTiming& core_timing, MemoryInterface& memory_interface);
+    Processor(CoreTiming& core_timing, MemoryInterface& memory_interface, bool use_jit);
     ~Processor();
     void Reset();
-    void Run(unsigned cycles);
+    void Run(unsigned cycles, Interpreter* debug_interp);
     void SignalInterrupt(u32 i);
     void SignalVectoredInterrupt(u32 address, bool context_switch);
 
     RegisterState& GetRegisterState();
     const RegisterState& GetRegisterState() const;
+    Interpreter& Interp();
 
 private:
     struct Impl;
