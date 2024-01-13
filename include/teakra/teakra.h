@@ -38,6 +38,7 @@ public:
     void Reset();
 
     uint8_t* GetDspMemory();
+    uint8_t* GetInterpDspMemory();
     const uint8_t* GetDspMemory() const;
 
     RegisterState& GetRegisterState();
@@ -92,5 +93,6 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl;
+    std::unique_ptr<Impl> impl_interp;
 };
 } // namespace Teakra
