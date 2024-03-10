@@ -13,6 +13,7 @@ add_library(teakra
     btdmp.cpp
     btdmp.h
     common_types.h
+    core_timing.h
     crash.h
     decoder.h
     disassembler.cpp
