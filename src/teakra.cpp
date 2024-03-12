@@ -27,12 +27,11 @@ struct Teakra::Impl {
     Ahbm ahbm;
     Dma dma{shared_memory, ahbm};
     MMIORegion mmio{miu, icu, apbp_from_cpu, apbp_from_dsp, timer, dma, ahbm, btdmp};
-    MemoryInterface memory_interface{shared_memory, miu};
+    MemoryInterface memory_interface{shared_memory, miu, mmio};
     Processor processor;
 
     Impl(bool use_jit, u8* dsp_memory)
         : shared_memory{dsp_memory}, processor(core_timing, memory_interface, use_jit) {
-        memory_interface.SetMMIO(mmio);
         using namespace std::placeholders;
         icu.SetInterruptHandler(std::bind(&Processor::SignalInterrupt, &processor, _1),
                                 std::bind(&Processor::SignalVectoredInterrupt, &processor, _1, _2));
