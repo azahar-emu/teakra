@@ -65,10 +65,10 @@ struct Teakra::Impl {
     }
 };
 
-Teakra::Teakra(const UserConfig& config, bool use_jit)
+Teakra::Teakra(const UserConfig& config)
     : impl_jit(std::make_unique<Impl>(true, config.dsp_memory)),
       impl_interp(std::make_unique<Impl>(false, config.dsp_memory)),
-      impl(use_jit ? impl_jit.get() : impl_interp.get()), use_jit(use_jit) {}
+      impl(config.use_jit ? impl_jit.get() : impl_interp.get()), use_jit(config.use_jit) {}
 
 Teakra::~Teakra() = default;
 
