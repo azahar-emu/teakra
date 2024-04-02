@@ -23,6 +23,7 @@ struct UserConfig {
     // DSP memory. By default set to nullptr. If it stays nullptr then Teakra will create its own
     // DSP memory and retain ownership of it. Otherwise, the user will own it.
     std::uint8_t* dsp_memory = nullptr;
+    bool use_jit = false;
 };
 
 static constexpr std::uint32_t DspMemorySize = 0x80000;
@@ -31,7 +32,7 @@ class Processor;
 
 class Teakra {
 public:
-    Teakra(const UserConfig& config, bool use_jit = false);
+    Teakra(const UserConfig& config);
     ~Teakra();
 
     Processor& GetProcessor();
