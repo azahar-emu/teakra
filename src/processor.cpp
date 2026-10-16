@@ -58,11 +58,11 @@ Interpreter& Processor::Interp() {
 }
 
 Teakra::RegisterState& Processor::GetRegisterState() {
-    return impl->regs;
+    return impl->iregs;
 }
 
 const Teakra::RegisterState& Processor::GetRegisterState() const {
-    return impl->regs;
+    return impl->iregs;
 }
 
 } // namespace Teakra
