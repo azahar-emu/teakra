@@ -33,77 +33,79 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
 
     memory_interface.ProgramWrite(0x1010, 0x57F0); // brr -1
 
-    // Fires interrupt 0 seven cycles in.
+    // Fires interrupt 0 nine cycles in, which is the reset branch (3 cycles) and six more.
     timer[0].SetInterruptHandler([&interpreter]() { interpreter.SignalInterrupt(0); });
     timer[0].count_mode = Teakra::Timer::CountMode::Single;
-    timer[0].start_low = 7;
+    timer[0].start_low = 9;
     timer[0].start_high = 0;
     timer[0].Restart();
 
+    // Cycles: a taken br or brr costs 3, inc 1. An interrupt signalled while an instruction runs is
+    // taken after the next one.
     SECTION("Simple counting") {
         memory_interface.ProgramWrite(0x0001, 0x1000);
-        interpreter.Run(1 + 5);
+        interpreter.Run(3 + 5);
         REQUIRE(regs.a[0] == 5);
         REQUIRE(regs.a[1] == 0);
     }
 
     SECTION("Counting with interrupt") {
         memory_interface.ProgramWrite(0x0001, 0x1000);
-        interpreter.Run(1 + 7 + 1 + 3);
+        interpreter.Run(3 + 7 + 3 + 3);
         REQUIRE(regs.a[0] == 7);
         REQUIRE(regs.a[1] == 3);
     }
 
     SECTION("Counting with idle and interrupt") {
         memory_interface.ProgramWrite(0x0001, 0x100D);
-        interpreter.Run(1 + 6);
+        interpreter.Run(3 + 3 + 3);
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 0);
 
-        interpreter.Run(3);
+        interpreter.Run(3 + 3 + 1);
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 1);
     }
 
     SECTION("Counting with idle and interrupt 2") {
         memory_interface.ProgramWrite(0x0001, 0x100D);
-        interpreter.Run(1 + 7);
+        interpreter.Run(3 + 7);
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 0);
 
-        interpreter.Run(3);
+        interpreter.Run(2 + 3 + 2);
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 2);
     }
 
     SECTION("Counting with idle and interrupt 3") {
         memory_interface.ProgramWrite(0x0001, 0x100D);
-        interpreter.Run(1 + 7 + 1 + 2);
+        interpreter.Run(3 + 6 + 3 + 3 + 2);
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 2);
     }
 
     SECTION("Idle with interrupt 1") {
         memory_interface.ProgramWrite(0x0001, 0x1010);
-        interpreter.Run(1 + 7 + 1 + 2);
+        interpreter.Run(3 + 6 + 3 + 3 + 2);
         REQUIRE(regs.a[0] == 0);
         REQUIRE(regs.a[1] == 2);
     }
 
     SECTION("Idle with interrupt 2") {
         memory_interface.ProgramWrite(0x0001, 0x1010);
-        interpreter.Run(1 + 7);
+        interpreter.Run(3 + 7);
         REQUIRE(regs.a[0] == 0);
         REQUIRE(regs.a[1] == 0);
 
-        interpreter.Run(1 + 2);
+        interpreter.Run(2 + 3 + 2);
         REQUIRE(regs.a[0] == 0);
         REQUIRE(regs.a[1] == 2);
     }
 
     SECTION("Idle with interrupt 3") {
         memory_interface.ProgramWrite(0x0001, 0x1010);
-        interpreter.Run(1 + 6);
+        interpreter.Run(3 + 6);
         REQUIRE(regs.a[0] == 0);
         REQUIRE(regs.a[1] == 0);
 
@@ -112,13 +114,13 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
             REQUIRE(regs.a[0] == 0);
             REQUIRE(regs.a[1] == 0);
 
-            interpreter.Run(1 + 2);
+            interpreter.Run(1 + 3 + 3 + 2);
             REQUIRE(regs.a[0] == 0);
             REQUIRE(regs.a[1] == 2);
         }
 
         SECTION("Run over the interrupt") {
-            interpreter.Run(1 + 1 + 2);
+            interpreter.Run(2 + 3 + 3 + 2);
             REQUIRE(regs.a[0] == 0);
             REQUIRE(regs.a[1] == 2);
         }

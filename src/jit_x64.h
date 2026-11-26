@@ -18,6 +18,7 @@
 #include <xbyak/xbyak.h>
 #include "bit.h"
 #include "core_timing.h"
+#include "cycles.h"
 #include "decoder.h"
 #include "interpreter.h"
 #include "jit_regs.h"
@@ -125,6 +126,7 @@ public:
     bool unimplemented = false;
     bool flush_pending = false;
     bool state_dirty = false;
+    u32 instruction_cycles = 0;
     u64 program_write_counter = 0;
     u16 compiled_cpc = 1;
     using BlockList = std::vector<std::pair<BlockKey, Block>>;
@@ -158,6 +160,10 @@ public:
         program_write_counter = mem.GetProgramWriteCounter();
         compiled_cpc = regs.cpc;
         state_dirty = false;
+        cycles_remaining = 0;
+    }
+
+    void ClearOverrun() {
         cycles_remaining = 0;
     }
 
@@ -287,8 +293,10 @@ public:
 
         LookupBlock();
 
-        // Check if we are idle, and skip ahead
-        if (regs.idle) {
+        // Check if we are idle, and skip ahead, unless the last block ticked a component into
+        // signalling an interrupt
+        if (regs.idle && !(interrupt_pending[0] || interrupt_pending[1] || interrupt_pending[2] ||
+                           vinterrupt_pending)) {
             u64 skipped = core_timing.Skip(cycles_remaining - 1);
             cycles_remaining -= skipped;
             // Skip additional tick so to let components fire interrupts
@@ -308,7 +316,13 @@ public:
             regs.ipv = 1;
         }
 
-        regs.loop_budget = static_cast<s32>(std::min(cycles_remaining, LoopBudget));
+        const bool interrupt_pending =
+            regs.ie && ((regs.im[0] && regs.ip[0]) || (regs.im[1] && regs.ip[1]) ||
+                        (regs.im[2] && regs.ip[2]) || (regs.imv && regs.ipv));
+        const s64 next_event = static_cast<s64>(core_timing.GetMaxSkip(LoopBudget)) + 1;
+        regs.loop_budget =
+            interrupt_pending ? 0 : static_cast<s32>(std::min(
+                                               {cycles_remaining, LoopBudget, next_event}));
         regs.loop_cycles = 0;
         return current_blk->func;
     }
@@ -366,8 +380,10 @@ public:
             }
         }
 
-        const u64 cycles = current_blk->cycles + regs.loop_cycles;
-        core_timing.Tick(cycles);
+        const u64 cycles = current_blk->cycles + regs.loop_cycles +
+                           std::exchange(regs.extra_cycles, 0) +
+                           mem.TakeMmioAccesses() * Cycles::MmioAccess;
+        core_timing.Tick(cycles - std::exchange(regs.ticked_cycles, 0));
         cycles_remaining -= cycles;
     }
 
@@ -386,7 +402,8 @@ public:
         SaveJitRegisters(regs, state);
         // Exceptions cannot unwind through emitted code, stop the dispatcher and rethrow from Run.
         try {
-            interpreter.Step();
+            // The fallback block counts one cycle.
+            regs.extra_cycles += interpreter.Step() - 1;
         } catch (...) {
             pending_exception = std::current_exception();
             cycles_remaining = 0;
@@ -459,6 +476,7 @@ public:
             const s32 cycles_backup = blk.cycles;
             unimplemented = false;
             pc_written = false;
+            instruction_cycles = 0;
             try {
                 decoder.call(*this, opcode, expand_value);
             } catch (const Xbyak::Error&) {
@@ -484,7 +502,7 @@ public:
             }
 
             ++instructions;
-            blk.cycles++;
+            blk.cycles += InstructionCycles(decoder);
 
             const bool rep_end = rep_end_locations.contains(current_pc);
             const bool bkrep_end = bkrep_end_locations.contains(next_pc - 1);
@@ -506,6 +524,28 @@ public:
         c.mov(ABI_PARAM1, reinterpret_cast<uintptr_t>(this));
         CallFarFunction(c, FallbackThunk);
         c.jmp(block_exit);
+    }
+
+    // The cycles of the instruction just compiled: its length unless a handler set a total.
+    u32 InstructionCycles(const Matcher<EmitX64>& decoder) const {
+        return instruction_cycles ? instruction_cycles : (decoder.NeedExpansion() ? 2 : 1);
+    }
+
+    // A conditional control flow instruction counts its not taken cycles when compiled. The taken
+    // path adds the returned difference with AddCycles.
+    u32 ControlFlowCycles(Cond cond, u32 words, u32 taken) {
+        if (cond.GetName() == CondValue::True) {
+            instruction_cycles = taken;
+            return 0;
+        }
+        instruction_cycles = words + Cycles::NotTaken;
+        return taken - instruction_cycles;
+    }
+
+    void AddCycles(u32 cycles) {
+        if (cycles != 0) {
+            c.add(dword[REGS + offsetof(JitRegisters, extra_cycles)], cycles);
+        }
     }
 
     void StorePC(u32 pc) {
@@ -788,13 +828,26 @@ public:
 
     static void ReadThunk(void* this_ptr) {
         auto* self = reinterpret_cast<EmitX64*>(this_ptr);
+        self->CatchUpTiming();
         self->regs.tmp_value = self->mem.DataRead(self->regs.tmp_addr);
     }
 
     static void WriteThunk(void* this_ptr) {
         auto* self = reinterpret_cast<EmitX64*>(this_ptr);
+        self->CatchUpTiming();
         self->mem.DataWrite(self->regs.tmp_addr, self->regs.tmp_value);
         self->SyncMemoryInterfaceUnit();
+    }
+
+    // Ticks the hardware up to the instruction making an MMIO access, so
+    // that timers and FIFOs that are read inside a block are up to date.
+    void CatchUpTiming() {
+        const u32 elapsed = regs.tmp_cycles + regs.loop_cycles + regs.extra_cycles +
+                            mem.PeekMmioAccesses() * Cycles::MmioAccess;
+        if (elapsed > regs.ticked_cycles) {
+            core_timing.Tick(elapsed - regs.ticked_cycles);
+            regs.ticked_cycles = elapsed;
+        }
     }
 
     // Calls out of a block. Block code treats every host register as preserved, so everything the
@@ -854,8 +907,9 @@ public:
     // Writes the low 16 bits of out and leaves the rest of it untouched.
     template <typename T>
     void LoadFromMemory(Reg64 out, T addr) {
-        FarCode& mmio = NewFarCode([this, out, addr] {
+        FarCode& mmio = NewFarCode([this, out, addr, cycles = current_blk->cycles] {
             EmitStoreTmpAddr(addr);
+            c.mov(dword[REGS + offsetof(JitRegisters, tmp_cycles)], cycles);
             EmitSlowCall(ReadThunk);
             c.mov(out.cvt16(), word[REGS + offsetof(JitRegisters, tmp_value)]);
         });
@@ -2141,15 +2195,19 @@ public:
     }
 
     void bkreprst(ArRn2 a) {
+        instruction_cycles = Cycles::BlockRepeatStoreRestore;
         BlockRepeatStoreRestore(RnName(GetArRnUnit(a)), true);
     }
     void bkreprst_memsp() {
+        instruction_cycles = Cycles::BlockRepeatStoreRestore;
         BlockRepeatStoreRestore(RegName::sp, true);
     }
     void bkrepsto(ArRn2 a) {
+        instruction_cycles = Cycles::BlockRepeatStoreRestore;
         BlockRepeatStoreRestore(RnName(GetArRnUnit(a)), false);
     }
     void bkrepsto_memsp() {
+        instruction_cycles = Cycles::BlockRepeatStoreRestore;
         BlockRepeatStoreRestore(RegName::sp, false);
     }
 
@@ -2215,21 +2273,25 @@ public:
     }
 
     void br(Address18_16 addr_low, Address18_2 addr_high, Cond cond) {
+        const u32 taken_cycles = ControlFlowCycles(cond, 2, Cycles::BranchTaken);
         StorePC(regs.pc);
         ConditionPass(cond, [&] {
             regs.pc = Address32(addr_low, addr_high);
             StorePC(regs.pc);
+            AddCycles(taken_cycles);
         });
         // For static jump we can continue compiling.
         compiling = cond.GetName() == CondValue::True;
     }
 
     void brr(RelAddr7 addr, Cond cond) {
+        const u32 taken_cycles = ControlFlowCycles(cond, 1, Cycles::BranchTaken);
         StorePC(regs.pc);
         ConditionPass(cond, [&] {
             // note: pc is the address of the NEXT instruction
             regs.pc += addr.Relative32();
             StorePC(regs.pc);
+            AddCycles(taken_cycles);
             if (addr.Relative32() == 0xFFFFFFFF) {
                 c.mov(dword[REGS + offsetof(JitRegisters, idle)], true);
                 compiling = false; // Always end compilation for idle loops.
@@ -2245,12 +2307,14 @@ public:
     }
 
     void call(Address18_16 addr_low, Address18_2 addr_high, Cond cond) {
+        const u32 taken_cycles = ControlFlowCycles(cond, 2, Cycles::BranchTaken);
         const u32 ret_pc = regs.pc;
         StorePC(ret_pc);
         ConditionPass(cond, [&] {
             EmitPushPC();
             regs.pc = Address32(addr_low, addr_high);
             StorePC(regs.pc);
+            AddCycles(taken_cycles);
         });
         // For static jump we can continue compiling.
         compiling = cond.GetName() == CondValue::True;
@@ -2262,6 +2326,7 @@ public:
         NOT_IMPLEMENTED();
     }
     void calla(Ax a) {
+        instruction_cycles = Cycles::IndirectBranch;
         EmitPushPC();
         const Reg64 pc = rax;
         GetAcc(pc, a.GetName());
@@ -2270,12 +2335,14 @@ public:
         compiling = false;
     }
     void callr(RelAddr7 addr, Cond cond) {
+        const u32 taken_cycles = ControlFlowCycles(cond, 1, Cycles::BranchTaken);
         const u32 ret_pc = regs.pc;
         StorePC(ret_pc);
         ConditionPass(cond, [&] {
             EmitPushPC();
             regs.pc += addr.Relative32();
             StorePC(regs.pc);
+            AddCycles(taken_cycles);
         });
         // For static jump we can continue compiling.
         compiling = cond.GetName() == CondValue::True;
@@ -2350,9 +2417,11 @@ public:
     }
 
     void ret(Cond cond) {
+        const u32 taken_cycles = ControlFlowCycles(cond, 1, Cycles::ReturnTaken);
         StorePC(regs.pc);
         ConditionPass(cond, [&] {
             EmitPopPC();
+            AddCycles(taken_cycles);
         });
         // If the last call instruction had a static target and this instruction
         // always returns, we don't have to stop compiling.
@@ -2367,19 +2436,23 @@ public:
         NOT_IMPLEMENTED();
     }
     void reti(Cond cond) {
+        const u32 taken_cycles = ControlFlowCycles(cond, 1, Cycles::ReturnTaken);
         StorePC(regs.pc);
         ConditionPass(cond, [&]{
             EmitPopPC();
             c.mov(word[REGS + offsetof(JitRegisters, ie)], 1);
+            AddCycles(taken_cycles);
         });
         compiling = false;
     }
     void retic(Cond cond) {
+        const u32 taken_cycles = ControlFlowCycles(cond, 1, Cycles::ReturnTaken);
         StorePC(regs.pc);
         ConditionPass(cond, [&] {
             EmitPopPC();
             c.mov(word[REGS + offsetof(JitRegisters, ie)], 1);
             ContextRestore();
+            AddCycles(taken_cycles);
         });
         compiling = false;
     }
@@ -2390,6 +2463,7 @@ public:
         NOT_IMPLEMENTED();
     }
     void rets(Imm8 a) {
+        instruction_cycles = Cycles::ReturnTaken;
         EmitPopPC();
         c.add(word[REGS + offsetof(JitRegisters, sp)], a.Unsigned16());
         if (!call_stack.empty()) {
@@ -2727,10 +2801,12 @@ public:
         }
 
         for (int i = 0; i <= a.Unsigned16(); i++) {
+            instruction_cycles = 0;
             decoder.call(*this, opcode, expand_value);
-            current_blk->cycles++;
+            current_blk->cycles += InstructionCycles(decoder);
             ASSERT(compiling); // Ensure the instruction doesn't break the block
         }
+        instruction_cycles = 0;
     }
     void rep(Register a) {
         const Reg64 value = rax;
@@ -2998,6 +3074,7 @@ public:
         NOT_IMPLEMENTED();
     }
     void movp(Ax a, Register b) {
+        instruction_cycles = Cycles::ProgramReadToRegister;
         const Reg64 address = rax;
         GetAcc(address, a.GetName());
         c.and_(address, 0x3FFFF);
@@ -3009,6 +3086,7 @@ public:
         NOT_IMPLEMENTED();
     }
     void movpdw(Ax a) {
+        instruction_cycles = Cycles::ProgramReadJump;
         const Reg64 address = rbx;
         GetAcc(address, a.GetName());
         c.and_(address, 0x3FFFF);
@@ -3052,8 +3130,9 @@ public:
 
     template <typename T1, typename T2>
     void StoreToMemory(T1 addr, T2 value) {
-        FarCode& mmio = NewFarCode([this, addr, value] {
+        FarCode& mmio = NewFarCode([this, addr, value, cycles = current_blk->cycles] {
             EmitStoreTmpAddr(addr);
+            c.mov(dword[REGS + offsetof(JitRegisters, tmp_cycles)], cycles);
             if constexpr (std::is_integral_v<T2>) {
                 c.mov(word[REGS + offsetof(JitRegisters, tmp_value)],
                       static_cast<u32>(value & 0xFFFF));
@@ -3405,10 +3484,12 @@ public:
     }
 
     void mov_pc(Ax a) {
+        instruction_cycles = Cycles::IndirectBranch;
         StorePC(GetAccDirect(a.GetName()).cvt32());
         compiling = false;
     }
     void mov_pc(Bx a) {
+        instruction_cycles = Cycles::IndirectBranch;
         StorePC(GetAccDirect(a.GetName()).cvt32());
         compiling = false;
     }

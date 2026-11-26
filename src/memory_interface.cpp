@@ -21,6 +21,7 @@ void MemoryInterface::ProgramWrite(u32 address, u16 value) {
 u16 MemoryInterface::DataRead(u16 address, bool bypass_mmio) {
     if (memory_interface_unit.InMMIO(address) && !bypass_mmio) {
         ASSERT(mmio != nullptr);
+        ++mmio_accesses;
         return mmio->Read(memory_interface_unit.ToMMIO(address));
     }
     u32 converted = memory_interface_unit.ConvertDataAddress(address);
@@ -30,6 +31,7 @@ u16 MemoryInterface::DataRead(u16 address, bool bypass_mmio) {
 void MemoryInterface::DataWrite(u16 address, u16 value, bool bypass_mmio) {
     if (memory_interface_unit.InMMIO(address) && !bypass_mmio) {
         ASSERT(mmio != nullptr);
+        ++mmio_accesses;
         return mmio->Write(memory_interface_unit.ToMMIO(address), value);
     }
     u32 converted = memory_interface_unit.ConvertDataAddress(address);

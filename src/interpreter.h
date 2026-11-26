@@ -9,6 +9,7 @@
 #include "bit.h"
 #include "core_timing.h"
 #include "crash.h"
+#include "cycles.h"
 #include "decoder.h"
 #include "memory_interface.h"
 #include "operand.h"
@@ -61,14 +62,18 @@ public:
 
     void Run(u64 cycles) {
         idle = false;
-        for (u64 i = 0; i < cycles; ++i) {
-            if (idle) {
-                u64 skipped = core_timing.Skip(cycles - i - 1);
-                i += skipped;
+        // Cycles that the previous Run went over are taken from this one.
+        s64 remaining = static_cast<s64>(cycles) - overrun;
+        while (remaining > 0) {
+            // An instruction of several cycles can tick a component into signalling an interrupt,
+            // and skipping past it would delay that interrupt.
+            if (idle && !InterruptPending()) {
+                u64 skipped = core_timing.Skip(remaining - 1);
+                remaining -= skipped;
 
                 // Skip additional tick so to let components fire interrupts
-                if (i < cycles - 1) {
-                    ++i;
+                if (remaining > 1) {
+                    --remaining;
                     core_timing.Tick();
                 }
             }
@@ -83,7 +88,7 @@ public:
                 regs.ipv = 1;
             }
 
-            Step();
+            const u32 step_cycles = Step() + mem.TakeMmioAccesses() * Cycles::MmioAccess;
 
             // I am not sure if a single-instruction loop is interruptable and how it is handled,
             // so just disable interrupt for it for now.
@@ -115,12 +120,26 @@ public:
                 }
             }
 
-            core_timing.Tick();
+            core_timing.Tick(step_cycles);
+            remaining -= step_cycles;
         }
+        overrun = -remaining;
     }
 
-    // Executes one instruction, without interrupts or timing.
-    void Step() {
+    void ClearOverrun() {
+        overrun = 0;
+    }
+
+    bool InterruptPending() const {
+        return interrupt_pending[0] || interrupt_pending[1] || interrupt_pending[2] ||
+               vinterrupt_pending;
+    }
+
+    // Executes one instruction without interrupts or timing. Returns its cycles, not counting MMIO
+    // accesses, which MemoryInterface counts.
+    u32 Step() {
+        instruction_cycles = 0;
+        extra_cycles = 0;
         u16 opcode = mem.ProgramRead((regs.pc++) | (regs.prpage << 18));
         auto& decoder = decoders[opcode];
         u16 expand_value = 0;
@@ -148,6 +167,8 @@ public:
         }
 
         decoder.call(*this, opcode, expand_value);
+        return (instruction_cycles ? instruction_cycles : (decoder.NeedExpansion() ? 2 : 1)) +
+               extra_cycles;
     }
 
     void SignalInterrupt(u32 i) {
@@ -1032,15 +1053,19 @@ public:
     }
     void bkreprst(ArRn2 a) {
         RestoreBlockRepeat(regs.r[GetArRnUnit(a)]);
+        instruction_cycles = Cycles::BlockRepeatStoreRestore;
     }
     void bkreprst_memsp() {
         RestoreBlockRepeat(regs.sp);
+        instruction_cycles = Cycles::BlockRepeatStoreRestore;
     }
     void bkrepsto(ArRn2 a) {
         StoreBlockRepeat(regs.r[GetArRnUnit(a)]);
+        instruction_cycles = Cycles::BlockRepeatStoreRestore;
     }
     void bkrepsto_memsp() {
         StoreBlockRepeat(regs.sp);
+        instruction_cycles = Cycles::BlockRepeatStoreRestore;
     }
 
     void banke(BankFlags flags) {
@@ -1101,6 +1126,9 @@ public:
     void br(Address18_16 addr_low, Address18_2 addr_high, Cond cond) {
         if (regs.ConditionPass(cond)) {
             SetPC(Address32(addr_low, addr_high));
+            instruction_cycles = Cycles::BranchTaken;
+        } else {
+            extra_cycles = Cycles::NotTaken;
         }
     }
 
@@ -1110,6 +1138,9 @@ public:
             if (addr.Relative32() == 0xFFFFFFFF) {
                 idle = true;
             }
+            instruction_cycles = Cycles::BranchTaken;
+        } else {
+            extra_cycles = Cycles::NotTaken;
         }
     }
 
@@ -1124,20 +1155,28 @@ public:
         if (regs.ConditionPass(cond)) {
             PushPC();
             SetPC(Address32(addr_low, addr_high));
+            instruction_cycles = Cycles::BranchTaken;
+        } else {
+            extra_cycles = Cycles::NotTaken;
         }
     }
     void calla(Axl a) {
         PushPC();
         SetPC(RegToBus16(a.GetName())); // use pcmhi?
+        instruction_cycles = Cycles::IndirectBranch;
     }
     void calla(Ax a) {
         PushPC();
         SetPC(GetAcc(a.GetName()) & 0x3FFFF); // no saturation ?
+        instruction_cycles = Cycles::IndirectBranch;
     }
     void callr(RelAddr7 addr, Cond cond) {
         if (regs.ConditionPass(cond)) {
             PushPC();
             regs.pc += addr.Relative32();
+            instruction_cycles = Cycles::BranchTaken;
+        } else {
+            extra_cycles = Cycles::NotTaken;
         }
     }
 
@@ -1182,6 +1221,9 @@ public:
     void ret(Cond c) {
         if (regs.ConditionPass(c)) {
             PopPC();
+            instruction_cycles = Cycles::ReturnTaken;
+        } else {
+            extra_cycles = Cycles::NotTaken;
         }
     }
     void retd() {
@@ -1191,6 +1233,9 @@ public:
         if (regs.ConditionPass(c)) {
             PopPC();
             regs.ie = 1;
+            instruction_cycles = Cycles::ReturnTaken;
+        } else {
+            extra_cycles = Cycles::NotTaken;
         }
     }
     void retic(Cond c) {
@@ -1198,6 +1243,9 @@ public:
             PopPC();
             regs.ie = 1;
             ContextRestore();
+            instruction_cycles = Cycles::ReturnTaken;
+        } else {
+            extra_cycles = Cycles::NotTaken;
         }
     }
     void retid() {
@@ -1209,6 +1257,7 @@ public:
     void rets(Imm8 a) {
         PopPC();
         regs.sp += a.Unsigned16();
+        instruction_cycles = Cycles::ReturnTaken;
     }
 
     void load_ps(Imm2 a) {
@@ -1635,17 +1684,20 @@ public:
         address |= (u32)regs.pcmhi << 16;
         u16 value = mem.ProgramRead(address);
         RegFromBus16(b.GetName(), value);
+        instruction_cycles = Cycles::ProgramReadToRegister;
     }
     void movp(Ax a, Register b) {
         u32 address = GetAcc(a.GetName()) & 0x3FFFF; // no saturation
         u16 value = mem.ProgramRead(address);
         RegFromBus16(b.GetName(), value);
+        instruction_cycles = Cycles::ProgramReadToRegister;
     }
     void movp(Rn a, StepZIDS as, R0123 b, StepZIDS bs) {
         u32 address_s = RnAddressAndModify(a.Index(), as.GetName());
         u16 address_d = RnAddressAndModify(b.Index(), bs.GetName());
         address_s |= (u32)regs.pcmhi << 16;
         mem.DataWrite(address_d, mem.ProgramRead(address_s));
+        instruction_cycles = Cycles::ProgramReadToData;
     }
     void movpdw(Ax a) {
         u32 address = GetAcc(a.GetName()) & 0x3FFFF; // no saturation
@@ -1653,6 +1705,7 @@ public:
         u16 h = mem.ProgramRead(address);
         u16 l = mem.ProgramRead(address + 1);
         SetPC(l | ((u32)h << 16));
+        instruction_cycles = Cycles::ProgramReadJump;
     }
 
     void mov(Ab a, Ab b) {
@@ -2007,10 +2060,12 @@ public:
     void mov_pc(Ax a) {
         u64 value = GetAcc(a.GetName());
         SetPC(value & 0xFFFFFFFF);
+        instruction_cycles = Cycles::IndirectBranch;
     }
     void mov_pc(Bx a) {
         u64 value = GetAcc(a.GetName());
         SetPC(value & 0xFFFFFFFF);
+        instruction_cycles = Cycles::IndirectBranch;
     }
 
     void mov_mixp_to(Bx b) {
@@ -2946,6 +3001,9 @@ private:
     std::atomic<u32> vinterrupt_address;
 
     bool idle = false;
+    s64 overrun = 0;
+    u32 instruction_cycles = 0;
+    u32 extra_cycles = 0;
 
     u64 GetAcc(RegName name) const {
         switch (name) {
