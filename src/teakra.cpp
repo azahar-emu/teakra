@@ -4,6 +4,7 @@
 #include "apbp.h"
 #include "btdmp.h"
 #include "core_timing.h"
+#include "cycles.h"
 #include "dma.h"
 #include "icu.h"
 #include "memory_interface.h"
@@ -34,11 +35,12 @@ struct Teakra::Impl {
         : shared_memory{dsp_memory}, processor{core_timing, memory_interface, use_jit} {
         memory_interface.SetMMIO(mmio);
         using namespace std::placeholders;
-        icu.SetInterruptHandler(std::bind(&Processor::SignalInterrupt, &processor, _1),
-                                std::bind(&Processor::SignalVectoredInterrupt, &processor, _1, _2));
+        icu.SetInterruptHandler(
+            std::bind(&Processor::SignalInterrupt, &processor, _1, _2),
+            std::bind(&Processor::SignalVectoredInterrupt, &processor, _1, _2, _3));
 
-        timer[0].SetInterruptHandler([this]() { icu.TriggerSingle(0xA); });
-        timer[1].SetInterruptHandler([this]() { icu.TriggerSingle(0x9); });
+        timer[0].SetInterruptHandler([this]() { icu.TriggerSingle(0xA, Cycles::TimerSignal); });
+        timer[1].SetInterruptHandler([this]() { icu.TriggerSingle(0x9, Cycles::TimerSignal); });
 
         apbp_from_cpu.SetDataHandler(0, [this]() { icu.TriggerSingle(0xE); });
         apbp_from_cpu.SetDataHandler(1, [this]() { icu.TriggerSingle(0xE); });

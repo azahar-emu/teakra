@@ -11,6 +11,7 @@
 #include "crash.h"
 #include "cycles.h"
 #include "decoder.h"
+#include "interrupt_requests.h"
 #include "memory_interface.h"
 #include "operand.h"
 #include "register.h"
@@ -65,9 +66,9 @@ public:
         // Cycles that the previous Run went over are taken from this one.
         s64 remaining = static_cast<s64>(cycles) - overrun;
         while (remaining > 0) {
-            // An instruction of several cycles can tick a component into signalling an interrupt,
-            // and skipping past it would delay that interrupt.
-            if (idle && !InterruptPending()) {
+            requests.Collect();
+            // Skipping while a request is on its way would delay its interrupt.
+            if (idle && !requests.Any()) {
                 u64 skipped = core_timing.Skip(remaining - 1);
                 remaining -= skipped;
 
@@ -76,19 +77,16 @@ public:
                     --remaining;
                     core_timing.Tick();
                 }
-            }
-
-            for (std::size_t i = 0; i < 3; ++i) {
-                if (interrupt_pending[i].exchange(false)) {
-                    regs.ip[i] = 1;
-                }
-            }
-
-            if (vinterrupt_pending.exchange(false)) {
-                regs.ipv = 1;
+                requests.Collect();
             }
 
             const u32 step_cycles = Step() + mem.TakeMmioAccesses() * Cycles::MmioAccess;
+            core_timing.Tick(step_cycles);
+            remaining -= step_cycles;
+
+            // Requests raised while this instruction ran start counting after it.
+            DeliverRequests(requests.Advance(step_cycles));
+            requests.Collect();
 
             // I am not sure if a single-instruction loop is interruptable and how it is handled,
             // so just disable interrupt for it for now.
@@ -114,25 +112,37 @@ public:
                     PushPC();
                     regs.pc = vinterrupt_address;
                     idle = false;
+                    interrupt_handled = true;
                     if (vinterrupt_context_switch) {
                         ContextStore();
                     }
                 }
+                if (interrupt_handled) {
+                    core_timing.Tick(Cycles::InterruptEntry);
+                    remaining -= Cycles::InterruptEntry;
+                }
             }
-
-            core_timing.Tick(step_cycles);
-            remaining -= step_cycles;
         }
         overrun = -remaining;
+    }
+
+    void DeliverRequests(u32 arrived) {
+        for (u32 i = 0; i < 3; ++i) {
+            if (arrived & (1u << i)) {
+                regs.ip[i] = 1;
+            }
+        }
+        if (arrived & (1u << InterruptRequests::Vectored)) {
+            regs.ipv = 1;
+        }
     }
 
     void ClearOverrun() {
         overrun = 0;
     }
 
-    bool InterruptPending() const {
-        return interrupt_pending[0] || interrupt_pending[1] || interrupt_pending[2] ||
-               vinterrupt_pending;
+    void ResetInterruptRequests() {
+        requests.Reset();
     }
 
     // Executes one instruction without interrupts or timing. Returns its cycles, not counting MMIO
@@ -171,13 +181,13 @@ public:
                extra_cycles;
     }
 
-    void SignalInterrupt(u32 i) {
-        interrupt_pending[i] = true;
+    void SignalInterrupt(u32 i, u32 source_delay = 0) {
+        requests.Signal(i, source_delay);
     }
-    void SignalVectoredInterrupt(u32 address, bool context_switch) {
+    void SignalVectoredInterrupt(u32 address, bool context_switch, u32 source_delay = 0) {
         vinterrupt_address = address;
-        vinterrupt_pending = true;
         vinterrupt_context_switch = context_switch;
+        requests.Signal(InterruptRequests::Vectored, source_delay);
     }
 
     using instruction_return_type = void;
@@ -991,6 +1001,8 @@ public:
         SatAndSetAccAndFlag(b_name, 0x8000);
     }
 
+    // Quirk: On hardware, a block repeat of a single instruction ignores its own count. It runs once, or
+    // as many times as an earlier loop's count (probably using a garbage or stale value).
     void BlockRepeat(u16 lc, u32 address) {
         ASSERT(regs.bcn <= 3);
         regs.bkrep_stack[regs.bcn].start = regs.pc;
@@ -2995,8 +3007,7 @@ private:
     RegisterState& regs;
     MemoryInterface& mem;
 
-    std::array<std::atomic<bool>, 3> interrupt_pending{{false, false, false}};
-    std::atomic<bool> vinterrupt_pending{false};
+    InterruptRequests requests;
     std::atomic<bool> vinterrupt_context_switch;
     std::atomic<u32> vinterrupt_address;
 

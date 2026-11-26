@@ -21,6 +21,7 @@
 #include "cycles.h"
 #include "decoder.h"
 #include "interpreter.h"
+#include "interrupt_requests.h"
 #include "jit_regs.h"
 #include "memory_interface.h"
 #include "operand.h"
@@ -149,10 +150,7 @@ public:
 
     void Reset() {
         regs.Reset();
-        for (auto& pending : interrupt_pending) {
-            pending = false;
-        }
-        vinterrupt_pending = false;
+        requests.Reset();
         bkrep_end_locations.clear();
         rep_end_locations.clear();
         ClearCache();
@@ -293,10 +291,9 @@ public:
 
         LookupBlock();
 
-        // Check if we are idle, and skip ahead, unless the last block ticked a component into
-        // signalling an interrupt
-        if (regs.idle && !(interrupt_pending[0] || interrupt_pending[1] || interrupt_pending[2] ||
-                           vinterrupt_pending)) {
+        requests.Collect();
+        // Check if we are idle, and skip ahead, unless a request is on its way to the core
+        if (regs.idle && !requests.Any()) {
             u64 skipped = core_timing.Skip(cycles_remaining - 1);
             cycles_remaining -= skipped;
             // Skip additional tick so to let components fire interrupts
@@ -304,24 +301,16 @@ public:
                 cycles_remaining--;
                 core_timing.Tick();
             }
-        }
-
-        for (std::size_t i = 0; i < 3; ++i) {
-            if (interrupt_pending[i].exchange(false)) {
-                regs.ip[i] = 1;
-            }
-        }
-
-        if (vinterrupt_pending.exchange(false)) {
-            regs.ipv = 1;
+            requests.Collect();
         }
 
         const bool interrupt_pending =
             regs.ie && ((regs.im[0] && regs.ip[0]) || (regs.im[1] && regs.ip[1]) ||
                         (regs.im[2] && regs.ip[2]) || (regs.imv && regs.ipv));
-        const s64 next_event = static_cast<s64>(core_timing.GetMaxSkip(LoopBudget)) + 1;
-        regs.loop_budget =
-            interrupt_pending ? 0 : static_cast<s32>(std::min(
+        const s64 next_event = static_cast<s64>(std::min(
+            core_timing.GetMaxSkip(LoopBudget) + 1, requests.NextArrival()));
+        regs.loop_budget = interrupt_pending ? 0
+                                         : static_cast<s32>(std::min(
                                                {cycles_remaining, LoopBudget, next_event}));
         regs.loop_cycles = 0;
         return current_blk->func;
@@ -350,6 +339,24 @@ public:
     }
 
     void DoInterruptsAndTick() {
+        const u64 cycles = current_blk->cycles + regs.loop_cycles +
+                           std::exchange(regs.extra_cycles, 0) +
+                           mem.TakeMmioAccesses() * Cycles::MmioAccess;
+        core_timing.Tick(cycles - std::exchange(regs.ticked_cycles, 0));
+        cycles_remaining -= cycles;
+
+        // Requests raised while the block ran start counting at its end.
+        const u32 arrived = requests.Advance(cycles);
+        for (u32 i = 0; i < 3; ++i) {
+            if (arrived & (1u << i)) {
+                regs.ip[i] = 1;
+            }
+        }
+        if (arrived & (1u << InterruptRequests::Vectored)) {
+            regs.ipv = 1;
+        }
+        requests.Collect();
+
         // I am not sure if a single instruction loop is interruptable and how it is handled,
         // so just disable interrupt for it for now.
         if (regs.ie && !regs.rep) {
@@ -374,17 +381,16 @@ public:
                 PushPC();
                 regs.pc = vinterrupt_address;
                 regs.idle = false;
+                interrupt_handled = true;
                 if (vinterrupt_context_switch) {
                     RunContextStore();
                 }
             }
+            if (interrupt_handled) {
+                core_timing.Tick(Cycles::InterruptEntry);
+                cycles_remaining -= Cycles::InterruptEntry;
+            }
         }
-
-        const u64 cycles = current_blk->cycles + regs.loop_cycles +
-                           std::exchange(regs.extra_cycles, 0) +
-                           mem.TakeMmioAccesses() * Cycles::MmioAccess;
-        core_timing.Tick(cycles - std::exchange(regs.ticked_cycles, 0));
-        cycles_remaining -= cycles;
     }
 
     void RunContextStore() {
@@ -711,19 +717,18 @@ public:
         StorePC(pc.cvt32());
     }
 
-    void SignalInterrupt(u32 i) {
-        interrupt_pending[i] = true;
+    void SignalInterrupt(u32 i, u32 source_delay = 0) {
+        requests.Signal(i, source_delay);
     }
-    void SignalVectoredInterrupt(u32 address, bool context_switch) {
+    void SignalVectoredInterrupt(u32 address, bool context_switch, u32 source_delay = 0) {
         vinterrupt_address = address;
-        vinterrupt_pending = true;
         vinterrupt_context_switch = context_switch;
+        requests.Signal(InterruptRequests::Vectored, source_delay);
     }
 
     using instruction_return_type = void;
 
-    std::array<std::atomic<bool>, 3> interrupt_pending{};
-    std::atomic<bool> vinterrupt_pending{false};
+    InterruptRequests requests;
     bool vinterrupt_context_switch = false;
     u32 vinterrupt_address = 0;
 
