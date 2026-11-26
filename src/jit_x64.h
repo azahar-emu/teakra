@@ -882,10 +882,10 @@ public:
         StorePC(pc.cvt32());
     }
 
-    void SignalInterrupt(u32 i, u32 source_delay = 0) {
+    void SignalInterrupt(u32 i, s32 source_delay = 0) {
         requests.Signal(i, source_delay);
     }
-    void SignalVectoredInterrupt(u32 address, bool context_switch, u32 source_delay = 0) {
+    void SignalVectoredInterrupt(u32 address, bool context_switch, s32 source_delay = 0) {
         vinterrupt_address = address;
         vinterrupt_context_switch = context_switch;
         requests.Signal(InterruptRequests::Vectored, source_delay);

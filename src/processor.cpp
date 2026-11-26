@@ -50,7 +50,7 @@ void Processor::Run(unsigned cycles) {
     impl->interpreter.Run(cycles);
 }
 
-void Processor::SignalInterrupt(u32 i, u32 source_delay) {
+void Processor::SignalInterrupt(u32 i, s32 source_delay) {
 #ifdef TEAKRA_ENABLE_JIT
     if (impl->jit) {
         impl->jit->SignalInterrupt(i, source_delay);
@@ -59,7 +59,7 @@ void Processor::SignalInterrupt(u32 i, u32 source_delay) {
 #endif
     impl->interpreter.SignalInterrupt(i, source_delay);
 }
-void Processor::SignalVectoredInterrupt(u32 address, bool context_switch, u32 source_delay) {
+void Processor::SignalVectoredInterrupt(u32 address, bool context_switch, s32 source_delay) {
 #ifdef TEAKRA_ENABLE_JIT
     if (impl->jit) {
         impl->jit->SignalVectoredInterrupt(address, context_switch, source_delay);

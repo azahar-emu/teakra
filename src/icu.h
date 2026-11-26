@@ -23,8 +23,9 @@ public:
     u16 GetAcknowledge() {
         return 0;
     }
-    // source_delay is the number of cycles the source takes to raise the request.
-    void Trigger(u16 irq_bits, u32 source_delay = 0) {
+    // source_delay is the number of cycles the source takes to raise the request. It is negative
+    // when the source raised it before the end of the current instruction.
+    void Trigger(u16 irq_bits, s32 source_delay = 0) {
         std::lock_guard lock(mutex);
         IrqBits bits(irq_bits);
         request |= bits;
@@ -45,7 +46,7 @@ public:
     u16 GetTrigger() {
         return 0;
     }
-    void TriggerSingle(u32 irq, u32 source_delay = 0) {
+    void TriggerSingle(u32 irq, s32 source_delay = 0) {
         Trigger(1 << irq, source_delay);
     }
     void SetEnable(u32 interrupt_index, u16 irq_bits) {
@@ -69,8 +70,8 @@ public:
         return vector_low[irq] | ((u32)vector_high[irq] << 16);
     }
 
-    void SetInterruptHandler(std::function<void(u32, u32)> interrupt,
-                             std::function<void(u32, bool, u32)> vectored_interrupt) {
+    void SetInterruptHandler(std::function<void(u32, s32)> interrupt,
+                             std::function<void(u32, bool, s32)> vectored_interrupt) {
         on_interrupt = std::move(interrupt);
         on_vectored_interrupt = std::move(vectored_interrupt);
     }
@@ -79,8 +80,8 @@ public:
     std::array<u16, 16> vector_context_switch;
 
 private:
-    std::function<void(u32, u32)> on_interrupt;
-    std::function<void(u32, bool, u32)> on_vectored_interrupt;
+    std::function<void(u32, s32)> on_interrupt;
+    std::function<void(u32, bool, s32)> on_vectored_interrupt;
 
     IrqBits request;
     std::array<IrqBits, 3> enabled;

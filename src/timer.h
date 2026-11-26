@@ -35,12 +35,12 @@ public:
     u16 counter_high = 0;
     u16 counter_low = 0;
 
-    void SetInterruptHandler(std::function<void()> handler) {
+    void SetInterruptHandler(std::function<void(u64)> handler) {
         interrupt_handler = std::move(handler);
     }
 
 private:
-    std::function<void()> interrupt_handler;
+    std::function<void(u64)> interrupt_handler;
 
     void UpdateMMIO();
 

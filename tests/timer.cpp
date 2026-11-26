@@ -6,7 +6,7 @@ struct TimerTestEnvironment {
     Teakra::Timer timer;
     int interrupt_counter = 0;
     TimerTestEnvironment() {
-        timer.SetInterruptHandler([&]() { interrupt_counter++; });
+        timer.SetInterruptHandler([&](u64) { interrupt_counter++; });
     }
 };
 

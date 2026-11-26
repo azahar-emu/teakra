@@ -10,13 +10,15 @@
 namespace Teakra {
 
 // Handles interrupt requests on their way from the ICU to the core. A request sets ip or ipv
-// Cycles::InterruptRequest cycles after it is signalled, plus a delay given by its source.
+// Cycles::InterruptRequest cycles after the end of the instruction during which it is signalled,
+// plus a delay given by its source.
 class InterruptRequests {
 public:
     static constexpr u32 Vectored = 3;
 
-    void Signal(u32 line, u32 source_delay) {
-        pending[line] = Cycles::InterruptRequest + source_delay + 1;
+    void Signal(u32 line, s32 source_delay) {
+        const s32 delay = static_cast<s32>(Cycles::InterruptRequest) + source_delay;
+        pending[line] = static_cast<u32>(std::max(delay, 0)) + 1;
         signalled = true;
     }
 
