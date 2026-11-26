@@ -345,16 +345,16 @@ struct JitRegisters {
     u16 tmp_addr = 0;
     u16 tmp_value = 0;
 
-    // Loops that restart at their own block run without returning to the dispatcher while
-    // loop_budget lasts. loop_cycles counts the cycles of the extra iterations.
-    s32 loop_budget = 0;
-    u32 loop_cycles = 0;
-    // Cycles known only at run time (taken conditional control flow, interpreter fallbacks).
-    u32 extra_cycles = 0;
-    // An MMIO access first ticks the hardware up to its instruction, tmp_cycles holds the block's
-    // static cycles before it, ticked_cycles what the block has ticked so far.
+    // The dispatcher sets budget and budget_start. Blocks keep running, looping or jumping to
+    // linked blocks, while budget stays above zero.
+    s32 budget = 0;
+    s32 budget_start = 0;
+    // Before an MMIO access the hardware is ticked up to its instruction. tmp_cycles holds the
+    // static cycles of the block before it, and ticked_cycles the cycles ticked since budget_start.
     u32 tmp_cycles = 0;
     u32 ticked_cycles = 0;
+    // Link slot of the block end that found no link and returned to the dispatcher.
+    void* exit_slot = nullptr;
 
     /** Program control unit **/
 

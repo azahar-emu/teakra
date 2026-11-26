@@ -17,9 +17,13 @@ public:
 
     void Signal(u32 line, u32 source_delay) {
         pending[line] = Cycles::InterruptRequest + source_delay + 1;
+        signalled = true;
     }
 
     void Collect() {
+        if (!signalled.load(std::memory_order_relaxed) || !signalled.exchange(false)) {
+            return;
+        }
         for (u32 line = 0; line < countdown.size(); ++line) {
             if (const u32 value = pending[line].exchange(0)) {
                 const s64 delay = static_cast<s64>(value) - 1;
@@ -64,11 +68,13 @@ public:
         for (auto& p : pending) {
             p = 0;
         }
+        signalled = false;
         countdown.fill(-1);
     }
 
 private:
     std::array<std::atomic<u32>, 4> pending{};
+    std::atomic<bool> signalled = false;
     std::array<s64, 4> countdown{{-1, -1, -1, -1}};
 };
 

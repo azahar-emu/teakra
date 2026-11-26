@@ -5,7 +5,9 @@
 #include <bitset>
 #include <exception>
 #include <cstring>
+#include <deque>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stack>
@@ -104,7 +106,21 @@ public:
 
     struct Block {
         BlockFunc func;
+        // Entry point for linked blocks, with the registers already loaded. Null for fallback
+        // blocks.
+        const void* body;
         s32 cycles;
+    };
+
+    struct LinkSlot {
+        static constexpr u32 NoPc = 0xFFFFFFFF;
+        struct Entry {
+            u32 pc = NoPc;
+            const void* code = nullptr;
+        };
+        std::array<Entry, 2> entries{};
+        u32 next = 0;
+        BlockKey key{};
     };
 
     CoreTiming& core_timing;
@@ -114,6 +130,11 @@ public:
     JitRegisters regs;
     Xbyak::CodeGenerator c;
     s64 cycles_remaining = 0;
+    // Cycles run but not yet applied to the timers and BTDMPs. They are applied before an MMIO
+    // access or a fallback, when one of them needs to be signaled (pending_ticks above ticks_to_event),
+    // and at the end of Run.
+    u64 pending_ticks = 0;
+    u64 ticks_to_event = 0;
     Xbyak::Label block_exit;
     std::size_t dispatcher_size = 0;
     const std::vector<Matcher<EmitX64>> decoders = GetDecoderTable<EmitX64>();
@@ -127,6 +148,8 @@ public:
     bool unimplemented = false;
     bool flush_pending = false;
     bool state_dirty = false;
+    bool link_ok = false;
+    std::deque<LinkSlot> link_slots;
     u32 instruction_cycles = 0;
     u64 program_write_counter = 0;
     u16 compiled_cpc = 1;
@@ -159,6 +182,26 @@ public:
         compiled_cpc = regs.cpc;
         state_dirty = false;
         cycles_remaining = 0;
+        pending_ticks = 0;
+        UpdateTicksToEvent();
+    }
+
+    void UpdateTicksToEvent() {
+        ticks_to_event = core_timing.GetMaxSkip(std::numeric_limits<u64>::max());
+    }
+
+    void FlushTicks() {
+        if (pending_ticks != 0) {
+            core_timing.Tick(std::exchange(pending_ticks, 0));
+        }
+        UpdateTicksToEvent();
+    }
+
+    void AddTicks(u64 ticks) {
+        pending_ticks += ticks;
+        if (pending_ticks > ticks_to_event) {
+            FlushTicks();
+        }
     }
 
     void ClearOverrun() {
@@ -175,7 +218,9 @@ public:
         cycles_remaining = static_cast<s64>(cycles) + std::min<s64>(cycles_remaining, 0);
         current_blk = nullptr;
         regs.idle = false;
+        UpdateTicksToEvent();
         run_code(this);
+        FlushTicks();
         if (pending_exception) {
             cycles_remaining = 0;
             std::rethrow_exception(std::exchange(pending_exception, nullptr));
@@ -194,6 +239,8 @@ public:
             block_cache[pc].clear();
         }
         cached_pcs.clear();
+        link_slots.clear();
+        regs.exit_slot = nullptr;
         c.setSize(dispatcher_size);
         flush_pending = false;
     }
@@ -248,8 +295,11 @@ public:
         c.jmp(ABI_RETURN);
         c.L(block_exit);
         c.mov(ABI_PARAM1, reinterpret_cast<uintptr_t>(this));
-        CallFarFunction(c, DoInterruptsAndTickThunk);
-        c.jmp(dispatcher_start);
+        CallFarFunction(c, BlockExitThunk);
+        c.test(ABI_RETURN, ABI_RETURN);
+        c.jz(dispatcher_end);
+        c.mov(ABI_PARAM1, reinterpret_cast<uintptr_t>(&regs));
+        c.jmp(ABI_RETURN);
         c.L(dispatcher_end);
         ABI_PopRegistersAndAdjustStack(c, ABI_ALL_CALLEE_SAVED, 8, 16);
         c.ret();
@@ -259,6 +309,12 @@ public:
 
     static BlockFunc LookupNewBlockThunk(void* this_ptr) {
         return reinterpret_cast<EmitX64*>(this_ptr)->LookupNewBlock();
+    }
+
+    static BlockFunc BlockExitThunk(void* this_ptr) {
+        auto* self = reinterpret_cast<EmitX64*>(this_ptr);
+        self->DoInterruptsAndTick();
+        return self->LookupNewBlock();
     }
 
     BlockFunc LookupNewBlock() {
@@ -289,11 +345,19 @@ public:
         std::memcpy(&blk_key.shadow.mod1, &regs.mod1b, sizeof(u16) * 3);
         std::memcpy(&blk_key.shadow.arp, &regs.arpb, sizeof(regs.arpb) + sizeof(regs.arb));
 
+        BlockKey key = blk_key;
+        key.pc = 0;
         LookupBlock();
+        if (auto* slot = static_cast<LinkSlot*>(std::exchange(regs.exit_slot, nullptr));
+            slot && current_blk->body && slot->key == key) {
+            slot->entries[slot->next] = {regs.pc, current_blk->body};
+            slot->next ^= 1;
+        }
 
         requests.Collect();
         // Check if we are idle, and skip ahead, unless a request is on its way to the core
         if (regs.idle && !requests.Any()) {
+            FlushTicks();
             u64 skipped = core_timing.Skip(cycles_remaining - 1);
             cycles_remaining -= skipped;
             // Skip additional tick so to let components fire interrupts
@@ -301,18 +365,19 @@ public:
                 cycles_remaining--;
                 core_timing.Tick();
             }
+            UpdateTicksToEvent();
             requests.Collect();
         }
 
         const bool interrupt_pending =
             regs.ie && ((regs.im[0] && regs.ip[0]) || (regs.im[1] && regs.ip[1]) ||
                         (regs.im[2] && regs.ip[2]) || (regs.imv && regs.ipv));
-        const s64 next_event = static_cast<s64>(std::min(
-            core_timing.GetMaxSkip(LoopBudget) + 1, requests.NextArrival()));
-        regs.loop_budget = interrupt_pending ? 0
-                                         : static_cast<s32>(std::min(
-                                               {cycles_remaining, LoopBudget, next_event}));
-        regs.loop_cycles = 0;
+        const s64 next_event = static_cast<s64>(std::min<u64>(
+            std::min<u64>(ticks_to_event - pending_ticks, LoopBudget) + 1, requests.NextArrival()));
+        regs.budget = interrupt_pending || flush_pending
+                          ? 0
+                          : static_cast<s32>(std::min({cycles_remaining, LoopBudget, next_event}));
+        regs.budget_start = regs.budget;
         return current_blk->func;
     }
 
@@ -339,10 +404,8 @@ public:
     }
 
     void DoInterruptsAndTick() {
-        const u64 cycles = current_blk->cycles + regs.loop_cycles +
-                           std::exchange(regs.extra_cycles, 0) +
-                           mem.TakeMmioAccesses() * Cycles::MmioAccess;
-        core_timing.Tick(cycles - std::exchange(regs.ticked_cycles, 0));
+        const u64 cycles = static_cast<s64>(regs.budget_start) - regs.budget;
+        AddTicks(cycles - std::exchange(regs.ticked_cycles, 0));
         cycles_remaining -= cycles;
 
         // Requests raised while the block ran start counting at its end.
@@ -387,7 +450,7 @@ public:
                 }
             }
             if (interrupt_handled) {
-                core_timing.Tick(Cycles::InterruptEntry);
+                AddTicks(Cycles::InterruptEntry);
                 cycles_remaining -= Cycles::InterruptEntry;
             }
         }
@@ -405,17 +468,18 @@ public:
 
     void Fallback() {
         ++fallback_count;
+        FlushTicks();
         SaveJitRegisters(regs, state);
         // Exceptions cannot unwind through emitted code, stop the dispatcher and rethrow from Run.
         try {
-            // The fallback block counts one cycle.
-            regs.extra_cycles += interpreter.Step() - 1;
+            regs.budget -= interpreter.Step() + mem.TakeMmioAccesses() * Cycles::MmioAccess;
         } catch (...) {
             pending_exception = std::current_exception();
             cycles_remaining = 0;
         }
         LoadJitRegisters(regs, state);
         SyncMemoryInterfaceUnit();
+        UpdateTicksToEvent();
         if (regs.rep) {
             AddRepEnd(regs.pc);
         }
@@ -444,8 +508,10 @@ public:
         blk.func = c.getCurr<BlockFunc>();
         blk.cycles = 0;
         EmitBlockEntry();
+        blk.body = c.getCurr();
         Xbyak::Label body;
         c.L(body);
+        link_ok = true;
         block_body = &body;
         block_start_pc = start_pc;
         entry_key = blk_key;
@@ -519,14 +585,15 @@ public:
             }
         }
 
-        EmitBlockExit();
+        EmitBlockEnd(blk.cycles);
         EmitFarCode();
         regs.pc = start_pc;
     }
 
     void EmitFallbackBlock(Block& blk) {
         blk.func = c.getCurr<BlockFunc>();
-        blk.cycles = 1;
+        blk.body = nullptr;
+        blk.cycles = 0;
         c.mov(ABI_PARAM1, reinterpret_cast<uintptr_t>(this));
         CallFarFunction(c, FallbackThunk);
         c.jmp(block_exit);
@@ -550,7 +617,7 @@ public:
 
     void AddCycles(u32 cycles) {
         if (cycles != 0) {
-            c.add(dword[REGS + offsetof(JitRegisters, extra_cycles)], cycles);
+            c.sub(dword[REGS + offsetof(JitRegisters, budget)], cycles);
         }
     }
 
@@ -562,6 +629,34 @@ public:
     void StorePC(Reg32 pc) {
         c.mov(dword[REGS + offsetof(JitRegisters, pc)], pc);
         pc_written = true;
+    }
+
+    // Subtracts the block's cycles from the budget, then jumps to the next block if it is linked
+    // and the budget is enough, or returns to the dispatcher.
+    void EmitBlockEnd(s32 cycles) {
+        Xbyak::Label exit;
+        c.sub(dword[REGS + offsetof(JitRegisters, budget)], cycles);
+        c.jle(exit);
+        if (link_ok) {
+            LinkSlot& slot = link_slots.emplace_back();
+            slot.key = blk_key;
+            slot.key.pc = 0;
+            Xbyak::Label second, miss;
+            c.mov(rbp, reinterpret_cast<uintptr_t>(&slot));
+            c.mov(eax, dword[REGS + offsetof(JitRegisters, pc)]);
+            c.cmp(eax, dword[rbp + offsetof(LinkSlot, entries)]);
+            c.jne(second);
+            c.jmp(ptr[rbp + offsetof(LinkSlot, entries) + offsetof(LinkSlot::Entry, code)]);
+            c.L(second);
+            c.cmp(eax, dword[rbp + offsetof(LinkSlot, entries) + sizeof(LinkSlot::Entry)]);
+            c.jne(miss);
+            c.jmp(ptr[rbp + offsetof(LinkSlot, entries) + sizeof(LinkSlot::Entry) +
+                      offsetof(LinkSlot::Entry, code)]);
+            c.L(miss);
+            c.mov(qword[REGS + offsetof(JitRegisters, exit_slot)], rbp);
+        }
+        c.L(exit);
+        EmitBlockExit();
     }
 
     void EmitBlockExit() {
@@ -594,18 +689,19 @@ public:
     // Ends the block after a loop end. Either the last instruction of a block repeat or an
     // instruction under rep. The pc defaults to the next instruction and is redirected when
     // the loop continues.
-    // Jumps back to the start of the block when the loop restarts there with the same static
-    // state, as long as the loop budget lasts. Falls through otherwise.
+    // Jumps back to the start of the block if the loop restarts there with the same static state
+    // and the budget is enough. Falls through otherwise.
     void EmitLoopBack(s32 block_cycles) {
         if (!(blk_key == entry_key)) {
             return;
         }
         Xbyak::Label exit;
-        c.sub(dword[REGS + offsetof(JitRegisters, loop_budget)], block_cycles);
+        c.sub(dword[REGS + offsetof(JitRegisters, budget)], block_cycles);
         c.jle(exit);
-        c.add(dword[REGS + offsetof(JitRegisters, loop_cycles)], block_cycles);
         c.jmp(*block_body);
         c.L(exit);
+        // The block end subtracts the cycles of this pass.
+        c.add(dword[REGS + offsetof(JitRegisters, budget)], block_cycles);
     }
 
     void EmitLoopEnd(u32 current_pc, u32 next_pc, bool rep_end, bool bkrep_end,
@@ -835,24 +931,41 @@ public:
         auto* self = reinterpret_cast<EmitX64*>(this_ptr);
         self->CatchUpTiming();
         self->regs.tmp_value = self->mem.DataRead(self->regs.tmp_addr);
+        self->regs.budget -= self->mem.TakeMmioAccesses() * Cycles::MmioAccess;
+        self->UpdateTicksToEvent();
     }
 
     static void WriteThunk(void* this_ptr) {
         auto* self = reinterpret_cast<EmitX64*>(this_ptr);
         self->CatchUpTiming();
         self->mem.DataWrite(self->regs.tmp_addr, self->regs.tmp_value);
+        self->regs.budget -= self->mem.TakeMmioAccesses() * Cycles::MmioAccess;
+        // The write can raise an interrupt or change program memory, so return to the dispatcher at
+        // the end of the block.
+        self->EndChain();
         self->SyncMemoryInterfaceUnit();
+        self->UpdateTicksToEvent();
+    }
+
+    // Makes the blocks return to the dispatcher at the end of the current one, without changing the
+    // cycles run (budget_start - budget).
+    void EndChain() {
+        if (regs.budget > 0) {
+            regs.budget_start -= regs.budget;
+            regs.budget = 0;
+        }
     }
 
     // Ticks the hardware up to the instruction making an MMIO access, so
     // that timers and FIFOs that are read inside a block are up to date.
     void CatchUpTiming() {
-        const u32 elapsed = regs.tmp_cycles + regs.loop_cycles + regs.extra_cycles +
+        const u32 elapsed = static_cast<u32>(regs.budget_start - regs.budget) + regs.tmp_cycles +
                             mem.PeekMmioAccesses() * Cycles::MmioAccess;
         if (elapsed > regs.ticked_cycles) {
-            core_timing.Tick(elapsed - regs.ticked_cycles);
+            pending_ticks += elapsed - regs.ticked_cycles;
             regs.ticked_cycles = elapsed;
         }
+        FlushTicks();
     }
 
     // Calls out of a block. Block code treats every host register as preserved, so everything the
@@ -2106,7 +2219,6 @@ public:
         c.or_(rbx, 1 << 16);
         c.mov(dword[REGS + offsetof(JitRegisters, bcn)], rbx.cvt32());
         static_assert(offsetof(JitRegisters, lp) - offsetof(JitRegisters, bcn) == sizeof(u16));
-        // TODO: Block linking so small loops dont go the dispatcher
         bkrep_end_locations.insert(address);
         StorePC(regs.pc);
         compiling = false;
@@ -2192,6 +2304,7 @@ public:
         if (restore) {
             StorePC(regs.pc);
             compiling = false;
+            link_ok = false;
         }
     }
 
@@ -2300,6 +2413,7 @@ public:
             if (addr.Relative32() == 0xFFFFFFFF) {
                 c.mov(dword[REGS + offsetof(JitRegisters, idle)], true);
                 compiling = false; // Always end compilation for idle loops.
+                link_ok = false;
             } else {
                 // For static jump we can continue compiling.
                 compiling = cond.GetName() == CondValue::True;
@@ -2371,6 +2485,7 @@ public:
     void EndBlockForInterrupts() {
         StorePC(regs.pc);
         compiling = false;
+        link_ok = false;
     }
 
     void ContextStore() {
@@ -2449,6 +2564,7 @@ public:
             AddCycles(taken_cycles);
         });
         compiling = false;
+        link_ok = false;
     }
     void retic(Cond cond) {
         const u32 taken_cycles = ControlFlowCycles(cond, 1, Cycles::ReturnTaken);
@@ -2460,6 +2576,7 @@ public:
             AddCycles(taken_cycles);
         });
         compiling = false;
+        link_ok = false;
     }
     void retid() {
         NOT_IMPLEMENTED();
@@ -3405,6 +3522,7 @@ public:
         c.mov(word[REGS + offsetof(JitRegisters, stepi0)], value.cvt16());
         StorePC(regs.pc);
         compiling = false;
+        link_ok = false;
     }
     void mov_a0h_stepj0() {
         const Reg64 value = rax;
@@ -3412,6 +3530,7 @@ public:
         c.mov(word[REGS + offsetof(JitRegisters, stepj0)], value.cvt16());
         StorePC(regs.pc);
         compiling = false;
+        link_ok = false;
     }
     void mov_stepi0_a0h() {
         RegFromBus16(RegName::a0h, blk_key.stepi0);
@@ -4481,6 +4600,7 @@ private:
             regs.SetSt1(c, value, blk_key.curr.mod0, blk_key.curr.mod1);
             StorePC(regs.pc);
             compiling = false; // Modifies static state, end block
+            link_ok = false;
             break;
         case RegName::sp:
             c.mov(word[REGS + offsetof(JitRegisters, sp)], value.cvt16());
@@ -4506,17 +4626,20 @@ private:
             c.mov(word[REGS + offsetof(JitRegisters, cfgi)], value.cvt16());
             StorePC(regs.pc);
             compiling = false; // Static state changed, end block
+            link_ok = false;
             break;
         case RegName::cfgj:
             c.mov(word[REGS + offsetof(JitRegisters, cfgj)], value.cvt16());
             StorePC(regs.pc);
             compiling = false; // Static state changed, end block
+            link_ok = false;
             break;
 
         case RegName::st0:
             regs.SetSt0(c, value, blk_key.curr.mod0);
             StorePC(regs.pc);
             compiling = false; // Static state changed, end block
+            link_ok = false;
             break;
 
         case RegName::stt0:
@@ -4533,27 +4656,32 @@ private:
             c.mov(word[REGS + offsetof(JitRegisters, mod0)], value.cvt16());
             StorePC(regs.pc);
             compiling = false;
+            link_ok = false;
             break;
         case RegName::mod1:
             c.mov(word[REGS + offsetof(JitRegisters, mod1)], value.cvt16());
             StorePC(regs.pc);
             compiling = false;
+            link_ok = false;
             break;
         case RegName::mod2:
             c.mov(word[REGS + offsetof(JitRegisters, mod2)], value.cvt16());
             StorePC(regs.pc);
             compiling = false;
+            link_ok = false;
             break;
         case RegName::mod3:
             regs.SetMod3(c, value);
             StorePC(regs.pc);
             compiling = false; // cpc is compiled into calls and returns
+            link_ok = false;
             break;
 
         case RegName::st2:
             regs.SetSt2(c, value, blk_key.curr.mod0, blk_key.curr.mod2);
             StorePC(regs.pc);
             compiling = false; // Static state changed, end block
+            link_ok = false;
             break;
 
         case RegName::ext0:
@@ -4569,31 +4697,37 @@ private:
             c.mov(word[REGS + offsetof(JitRegisters, ar)], value.cvt16());
             StorePC(regs.pc);
             compiling = false; // Static state changed, end block
+            link_ok = false;
             break;
         case RegName::ar1:
             c.mov(word[REGS + offsetof(JitRegisters, ar) + sizeof(u16)], value.cvt16());
             StorePC(regs.pc);
             compiling = false; // Static state changed, end block
+            link_ok = false;
             break;
         case RegName::arp0:
             c.mov(word[REGS + offsetof(JitRegisters, arp)], value.cvt16());
             StorePC(regs.pc);
             compiling = false; // Static state changed, end block
+            link_ok = false;
             break;
         case RegName::arp1:
             c.mov(word[REGS + offsetof(JitRegisters, arp) + sizeof(u16)], value.cvt16());
             StorePC(regs.pc);
             compiling = false; // Static state changed, end block
+            link_ok = false;
             break;
         case RegName::arp2:
             c.mov(word[REGS + offsetof(JitRegisters, arp) + sizeof(u16) * 2], value.cvt16());
             StorePC(regs.pc);
             compiling = false; // Static state changed, end block
+            link_ok = false;
             break;
         case RegName::arp3:
             c.mov(word[REGS + offsetof(JitRegisters, arp) + sizeof(u16) * 3], value.cvt16());
             StorePC(regs.pc);
             compiling = false; // Static state changed, end block
+            link_ok = false;
             break;
 
         default:
@@ -4691,6 +4825,7 @@ private:
             regs.SetMod3(c, value);
             StorePC(regs.pc);
             compiling = false; // cpc is compiled into calls and returns
+            link_ok = false;
             break;
 
         case RegName::ext0:
