@@ -149,6 +149,11 @@ public:
     bool flush_pending = false;
     bool state_dirty = false;
     bool link_ok = false;
+    // Set while emitting a repetition that is followed by another one.
+    // Only sticky flags are computed.
+    bool light_flags = false;
+    // Set by the handlers whose flags light_flags handles completely and that read no flags.
+    bool light_ok = false;
     std::deque<LinkSlot> link_slots;
     u32 instruction_cycles = 0;
     u64 program_write_counter = 0;
@@ -521,6 +526,8 @@ public:
         far_code.clear();
         u32 instructions = 0;
 
+        EmitLightRepetitions();
+
         compiling = true;
         while (compiling) {
             // Following static jumps can loop back into the block, so stop there and also cap the
@@ -588,6 +595,68 @@ public:
         EmitBlockEnd(blk.cycles);
         EmitFarCode();
         regs.pc = start_pc;
+    }
+
+    // A block of one instruction under rep repeats it in emitted code. A repetition that is
+    // followed by another one runs a variant that computes only the sticky flags, because the next
+    // one overwrites the others. The last repetition always runs the full code below.
+    void EmitLightRepetitions() {
+        const u32 start_pc = regs.pc;
+        if (!rep_end_locations.contains(start_pc)) {
+            return;
+        }
+        const u16 opcode = mem.ProgramRead(start_pc | (regs.prpage << 18));
+        const auto& decoder = decoders[opcode];
+        const u32 length = decoder.NeedExpansion() ? 2 : 1;
+        if (bkrep_end_locations.contains(start_pc + length - 1)) {
+            return;
+        }
+        const u16 expand_value =
+            decoder.NeedExpansion() ? mem.ProgramRead((start_pc + 1) | (regs.prpage << 18)) : 0;
+
+        const BlockKey key_backup = blk_key;
+        const auto call_stack_backup = call_stack;
+        const std::size_t far_code_count = far_code.size();
+        // Emits the light variant. Returns its cycles, or 0 if the instruction has none.
+        const auto emit = [&]() -> u32 {
+            regs.pc = start_pc + length;
+            light_flags = true;
+            light_ok = false;
+            unimplemented = false;
+            instruction_cycles = 0;
+            try {
+                decoder.call(*this, opcode, expand_value);
+            } catch (const Xbyak::Error&) {
+                unimplemented = true;
+            }
+            light_flags = false;
+            const bool ok = light_ok && !unimplemented && blk_key == entry_key;
+            blk_key = key_backup;
+            call_stack = call_stack_backup;
+            regs.pc = start_pc;
+            return ok ? InstructionCycles(decoder) : 0;
+        };
+
+        const std::size_t code_pos = c.getSize();
+        const u32 cycles = emit();
+        c.setSize(code_pos);
+        far_code.resize(far_code_count);
+        if (cycles == 0) {
+            return;
+        }
+
+        Xbyak::Label full;
+        c.test(byte[REGS + offsetof(JitRegisters, rep)], 1);
+        c.jz(full, Xbyak::CodeGenerator::T_NEAR);
+        c.cmp(word[REGS + offsetof(JitRegisters, repc)], 0);
+        c.je(full, Xbyak::CodeGenerator::T_NEAR);
+        c.cmp(dword[REGS + offsetof(JitRegisters, budget)], cycles);
+        c.jle(full, Xbyak::CodeGenerator::T_NEAR);
+        emit();
+        c.sub(word[REGS + offsetof(JitRegisters, repc)], 1);
+        c.sub(dword[REGS + offsetof(JitRegisters, budget)], cycles);
+        c.jmp(*block_body);
+        c.L(full);
     }
 
     void EmitFallbackBlock(Block& blk) {
@@ -2026,6 +2095,23 @@ public:
             c.sub(result, b);
         } else {
             c.add(result, b);
+        }
+        if (light_flags) {
+            // Only the sticky fvl, set on overflow.
+            if (sub) {
+                c.not_(b);
+            }
+            c.xor_(b, a);
+            c.not_(b);
+            c.xor_(a, result);
+            c.and_(a, b);
+            c.xor_(esi, esi);
+            c.bt(a, 39);
+            c.setc(rsi.cvt8());
+            c.shl(esi, decltype(Flags::fvl)::position);
+            c.or_(FLAGS, esi);
+            SignExtend(result, 40);
+            return;
         }
         c.and_(FLAGS, ~(decltype(Flags::fc0)::mask | decltype(Flags::fv)::mask)); // clear fc0, fv
         c.xor_(esi, esi);
@@ -4138,15 +4224,19 @@ public:
         const Reg64 result = rdx;
         AddSub(value_c, value_a, result, sub_p0);
         const Reg32 temp = value_a.cvt32();
-        c.mov(temp, FLAGS);
-        c.and_(temp, decltype(Flags::fc0)::mask | decltype(Flags::fv)::mask); // Keep fc0 and fv
+        if (!light_flags) {
+            c.mov(temp, FLAGS);
+            c.and_(temp, decltype(Flags::fc0)::mask | decltype(Flags::fv)::mask); // Keep fc0 and fv
+        }
         const Reg64 result2 = value_c;
         AddSub(result, value_b, result2, sub_p1);
         // Is this correct?
-        if (sub_p0 == sub_p1) {
-            c.or_(FLAGS, temp);
-        } else {
-            c.xor_(FLAGS, temp);
+        if (!light_flags) {
+            if (sub_p0 == sub_p1) {
+                c.or_(FLAGS, temp);
+            } else {
+                c.xor_(FLAGS, temp);
+            }
         }
         SatAndSetAccAndFlag(acc, result2);
     }
@@ -4160,6 +4250,7 @@ public:
     void mma(ArpRnX xy, ArpStepX i, ArpStepX j, bool dmodi, bool dmodj, RegName a, bool x0_sign,
              bool y0_sign, bool x1_sign, bool y1_sign, SumBase base, bool sub_p0, bool p0_align,
              bool sub_p1, bool p1_align) {
+        light_ok = true;
         ProductSum(base, a, sub_p0, p0_align, sub_p1, p1_align);
         auto [ui, uj] = GetArpRnUnit(xy);
         auto [si, sj] = GetArpStep(i, j);
@@ -4895,6 +4986,9 @@ private:
 
     template <typename T>
     void SetAccFlag(T value) {
+        if (light_flags) {
+            return;
+        }
         constexpr u16 ACC_MASK = ~(decltype(Flags::fz)::mask | decltype(Flags::fm)::mask |
                                    decltype(Flags::fe)::mask | decltype(Flags::fn)::mask);
         if constexpr (std::is_base_of_v<Xbyak::Reg, T>) {
