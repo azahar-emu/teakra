@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <utility>
 #include "common_types.h"
 #include "crash.h"
 
@@ -73,12 +74,21 @@ public:
     u64 GetProgramWriteCounter() const {
         return program_write_counter;
     }
+    // MMIO accesses through DataRead/DataWrite since the last call.
+    // Each costs an extra cycle.
+    u32 TakeMmioAccesses() {
+        return std::exchange(mmio_accesses, 0);
+    }
+    u32 PeekMmioAccesses() const {
+        return mmio_accesses;
+    }
 
 private:
     SharedMemory& shared_memory;
     MemoryInterfaceUnit& memory_interface_unit;
     MMIORegion* mmio;
     u64 program_write_counter = 0;
+    u32 mmio_accesses = 0;
 };
 
 } // namespace Teakra

@@ -349,6 +349,12 @@ struct JitRegisters {
     // loop_budget lasts. loop_cycles counts the cycles of the extra iterations.
     s32 loop_budget = 0;
     u32 loop_cycles = 0;
+    // Cycles known only at run time (taken conditional control flow, interpreter fallbacks).
+    u32 extra_cycles = 0;
+    // An MMIO access first ticks the hardware up to its instruction, tmp_cycles holds the block's
+    // static cycles before it, ticked_cycles what the block has ticked so far.
+    u32 tmp_cycles = 0;
+    u32 ticked_cycles = 0;
 
     /** Program control unit **/
 

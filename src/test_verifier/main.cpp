@@ -116,8 +116,11 @@ int main(int argc, char** argv) {
         bool pass = true;
         bool skip = false;
         try {
+            // Each case is one instruction, so its extra cycles must not carry into the next case.
+            interpreter.ClearOverrun();
 #ifdef TEAKRA_ENABLE_JIT
             if (jit) {
+                jit->ClearOverrun();
                 jit->Run(1);
                 jit->SaveState();
             } else {

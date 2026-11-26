@@ -31,6 +31,7 @@ Processor::~Processor() = default;
 
 void Processor::Reset() {
     impl->regs = RegisterState();
+    impl->interpreter.ClearOverrun();
 #ifdef TEAKRA_ENABLE_JIT
     if (impl->jit) {
         impl->jit->Reset();
