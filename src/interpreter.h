@@ -1144,13 +1144,25 @@ public:
         }
     }
 
+    // Quirk: On hardware, if a taken brr is directly followed by the last instruction of a block
+    // repeat that still has iterations left, the brr does not jump to its target. Execution
+    // continues at the start of the loop instead, and the last instruction is skipped.
+    // The br instruction, a 2-word last instruction or a brr further from the end are not affected.
+    // Quirk: When such a brr is not taken, the last instruction runs but the loop does not go back.
+    // The loop state after that is unknown, so this case is not emulated yet.
     void brr(RelAddr7 addr, Cond cond) {
         if (regs.ConditionPass(cond)) {
+            instruction_cycles = Cycles::BranchTaken;
+            if (regs.lp && regs.bkrep_stack[regs.bcn - 1].end == regs.pc &&
+                regs.bkrep_stack[regs.bcn - 1].lc != 0) {
+                --regs.bkrep_stack[regs.bcn - 1].lc;
+                regs.pc = regs.bkrep_stack[regs.bcn - 1].start;
+                return;
+            }
             regs.pc += addr.Relative32(); // note: pc is the address of the NEXT instruction
             if (addr.Relative32() == 0xFFFFFFFF) {
                 idle = true;
             }
-            instruction_cycles = Cycles::BranchTaken;
         } else {
             extra_cycles = Cycles::NotTaken;
         }

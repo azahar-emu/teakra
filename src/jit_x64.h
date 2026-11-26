@@ -2490,11 +2490,17 @@ public:
 
     void brr(RelAddr7 addr, Cond cond) {
         const u32 taken_cycles = ControlFlowCycles(cond, 1, Cycles::BranchTaken);
+        const u32 next_pc = regs.pc;
+        // A loop back can replace the jump (see the interpreter's brr).
+        const bool loop_end_next = bkrep_end_locations.contains(next_pc);
         StorePC(regs.pc);
         ConditionPass(cond, [&] {
             // note: pc is the address of the NEXT instruction
             regs.pc += addr.Relative32();
             StorePC(regs.pc);
+            if (loop_end_next) {
+                EmitLoopBackForBranch(next_pc);
+            }
             AddCycles(taken_cycles);
             if (addr.Relative32() == 0xFFFFFFFF) {
                 c.mov(dword[REGS + offsetof(JitRegisters, idle)], true);
@@ -2502,9 +2508,31 @@ public:
                 link_ok = false;
             } else {
                 // For static jump we can continue compiling.
-                compiling = cond.GetName() == CondValue::True;
+                compiling = cond.GetName() == CondValue::True && !loop_end_next;
             }
         });
+    }
+
+    // Goes back to the start of the bkrep block instead of the brr target when the last block
+    // instruction is the word after the brr.
+    void EmitLoopBackForBranch(u32 next_pc) {
+        using Frame = JitRegisters::BlockRepeatFrame;
+        static_assert(sizeof(Frame) == 12);
+        Xbyak::Label skip;
+        const Reg64 frame = rax;
+        c.test(word[REGS + offsetof(JitRegisters, lp)], 0x1);
+        c.jz(skip);
+        c.movzx(frame, word[REGS + offsetof(JitRegisters, bcn)]);
+        c.lea(frame, ptr[frame + frame * 2]);
+        c.lea(frame, ptr[REGS + offsetof(JitRegisters, bkrep_stack) - sizeof(Frame) + frame * 4]);
+        c.cmp(dword[frame + offsetof(Frame, end)], next_pc);
+        c.jne(skip);
+        c.cmp(word[frame + offsetof(Frame, lc)], 0);
+        c.je(skip);
+        c.sub(word[frame + offsetof(Frame, lc)], 1);
+        c.mov(ecx, dword[frame + offsetof(Frame, start)]);
+        StorePC(ecx);
+        c.L(skip);
     }
 
     void break_() {
