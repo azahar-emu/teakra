@@ -49,7 +49,7 @@ void Timer::Tick(u64 ticks) {
         counter -= static_cast<u32>(step);
         ticks -= step;
         if (counter == 0) {
-            interrupt_handler();
+            interrupt_handler(ticks);
         }
     }
     UpdateMMIO();
@@ -65,7 +65,7 @@ void Timer::TickEvent() {
     --counter;
     UpdateMMIO();
     if (counter == 0)
-        interrupt_handler();
+        interrupt_handler(0);
 }
 
 void Timer::UpdateMMIO() {

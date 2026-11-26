@@ -34,16 +34,16 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
     memory_interface.ProgramWrite(0x1010, 0x57F0); // brr -1
 
     // Fires interrupt 0 nine cycles in, which is the reset branch (3 cycles) and six more.
-    timer[0].SetInterruptHandler([&interpreter]() { interpreter.SignalInterrupt(0); });
+    timer[0].SetInterruptHandler([&interpreter](u64) { interpreter.SignalInterrupt(0); });
     timer[0].count_mode = Teakra::Timer::CountMode::Single;
     timer[0].start_low = 9;
     timer[0].start_high = 0;
     timer[0].Restart();
 
-    // Cycles: a taken br or brr costs 3, inc 1. The timer signals at the end of the instruction
-    // during which it reaches 0. The test wires the timer to the core directly, so the request
-    // reaches the core 3 cycles later (InterruptRequest). It is taken after the instruction during
-    // which it arrives, for 4 cycles (InterruptEntry). Cycles that a Run goes over are taken from
+    // Cycles: a taken br or brr costs 3, inc 1. The timer reaches 0 at cycle 9, at the end of an
+    // instruction. The test wires the timer to the core directly, so the request reaches the core
+    // 6 cycles later (InterruptRequest), at cycle 15. It is taken after the instruction during
+    // which it arrives, for 1 cycle (InterruptEntry). Cycles that a Run goes over are taken from
     // the next Run.
     SECTION("Simple counting") {
         memory_interface.ProgramWrite(0x0001, 0x1000);
@@ -54,8 +54,8 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
 
     SECTION("Counting with interrupt") {
         memory_interface.ProgramWrite(0x0001, 0x1000);
-        interpreter.Run(3 + 9 + 4 + 3 + 3);
-        REQUIRE(regs.a[0] == 9);
+        interpreter.Run(3 + 12 + 1 + 3 + 3);
+        REQUIRE(regs.a[0] == 12);
         REQUIRE(regs.a[1] == 3);
     }
 
@@ -65,7 +65,7 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 0);
 
-        interpreter.Run(3 + 4 + 3 + 1);
+        interpreter.Run(3 + 3 + 1 + 3 + 1);
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 1);
     }
@@ -76,21 +76,22 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 0);
 
-        interpreter.Run(6 + 3 + 2);
+        // The last Run went 2 cycles over, to cycle 12.
+        interpreter.Run(2 + 3 + 1 + 3 + 2);
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 2);
     }
 
     SECTION("Counting with idle and interrupt 3") {
         memory_interface.ProgramWrite(0x0001, 0x100D);
-        interpreter.Run(3 + 6 + 3 + 4 + 3 + 2);
+        interpreter.Run(3 + 3 + 9 + 1 + 3 + 2);
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 2);
     }
 
     SECTION("Idle with interrupt 1") {
         memory_interface.ProgramWrite(0x0001, 0x1010);
-        interpreter.Run(3 + 6 + 3 + 4 + 3 + 2);
+        interpreter.Run(3 + 12 + 1 + 3 + 2);
         REQUIRE(regs.a[0] == 0);
         REQUIRE(regs.a[1] == 2);
     }
@@ -101,11 +102,14 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
         REQUIRE(regs.a[0] == 0);
         REQUIRE(regs.a[1] == 0);
 
-        interpreter.Run(6 + 3 + 2);
+        // The last Run went 2 cycles over, to cycle 12.
+        interpreter.Run(2 + 3 + 1 + 3 + 2);
         REQUIRE(regs.a[0] == 0);
         REQUIRE(regs.a[1] == 2);
     }
 
+    // The idle skip stops a cycle before the timer reaches 0, and the brr that follows ends at
+    // cycle 11, 2 cycles over. The request then arrives at cycle 17.
     SECTION("Idle with interrupt 3") {
         memory_interface.ProgramWrite(0x0001, 0x1010);
         interpreter.Run(3 + 6);
@@ -117,13 +121,13 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
             REQUIRE(regs.a[0] == 0);
             REQUIRE(regs.a[1] == 0);
 
-            interpreter.Run(1 + 3 + 4 + 3 + 2);
+            interpreter.Run(1 + 3 + 3 + 1 + 3 + 2);
             REQUIRE(regs.a[0] == 0);
             REQUIRE(regs.a[1] == 2);
         }
 
         SECTION("Run over the interrupt") {
-            interpreter.Run(2 + 3 + 4 + 3 + 2);
+            interpreter.Run(2 + 3 + 3 + 1 + 3 + 2);
             REQUIRE(regs.a[0] == 0);
             REQUIRE(regs.a[1] == 2);
         }

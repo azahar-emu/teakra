@@ -15,8 +15,8 @@ public:
     ~Processor();
     void Reset();
     void Run(unsigned cycles);
-    void SignalInterrupt(u32 i, u32 source_delay = 0);
-    void SignalVectoredInterrupt(u32 address, bool context_switch, u32 source_delay = 0);
+    void SignalInterrupt(u32 i, s32 source_delay = 0);
+    void SignalVectoredInterrupt(u32 address, bool context_switch, s32 source_delay = 0);
 
     RegisterState& GetRegisterState();
     const RegisterState& GetRegisterState() const;

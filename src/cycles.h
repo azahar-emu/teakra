@@ -21,11 +21,12 @@ constexpr u32 ProgramReadToData = 3;     // total, movp to data memory
 constexpr u32 BlockRepeatStoreRestore = 2; // total, bkrepsto, bkreprst
 
 // Interrupt timings, measured on hardware. A request reaches the core InterruptRequest cycles
-// after the ICU raises it, and a timer signals TimerSignal cycles after reaching 0.
+// after the end of the instruction that makes the ICU raise it, and a timer signals TimerSignal
+// cycles after the cycle when reaches 0.
 // The interrupt is taken after the instruction during which the request arrives, and
 // taking it costs InterruptEntry cycles.
-constexpr u32 InterruptRequest = 3;
+constexpr u32 InterruptRequest = 6;
 constexpr u32 TimerSignal = 4;
-constexpr u32 InterruptEntry = 4;
+constexpr u32 InterruptEntry = 1;
 
 } // namespace Teakra::Cycles

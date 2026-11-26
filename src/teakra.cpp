@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include "ahbm.h"
@@ -39,8 +40,14 @@ struct Teakra::Impl {
             std::bind(&Processor::SignalInterrupt, &processor, _1, _2),
             std::bind(&Processor::SignalVectoredInterrupt, &processor, _1, _2, _3));
 
-        timer[0].SetInterruptHandler([this]() { icu.TriggerSingle(0xA, Cycles::TimerSignal); });
-        timer[1].SetInterruptHandler([this]() { icu.TriggerSingle(0x9, Cycles::TimerSignal); });
+        const auto timer_delay = [](u64 late) {
+            return static_cast<s32>(Cycles::TimerSignal) -
+                   static_cast<s32>(std::min<u64>(late, 0x10000));
+        };
+        timer[0].SetInterruptHandler(
+            [this, timer_delay](u64 late) { icu.TriggerSingle(0xA, timer_delay(late)); });
+        timer[1].SetInterruptHandler(
+            [this, timer_delay](u64 late) { icu.TriggerSingle(0x9, timer_delay(late)); });
 
         apbp_from_cpu.SetDataHandler(0, [this]() { icu.TriggerSingle(0xE); });
         apbp_from_cpu.SetDataHandler(1, [this]() { icu.TriggerSingle(0xE); });
