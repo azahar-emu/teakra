@@ -18,6 +18,13 @@ option(TEAKRA_BUILD_TOOLS "Build tools" ${MASTER_PROJECT})
 cmake_dependent_option(TEAKRA_BUILD_UNIT_TESTS "Build unit tests" "${MASTER_PROJECT}" "BUILD_TESTING" OFF)
 option(TEAKRA_RUN_TESTS "Run Teakra accuracy tests" OFF)
 
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|x64)$")
+    set(TEAKRA_JIT_DEFAULT ON)
+else()
+    set(TEAKRA_JIT_DEFAULT OFF)
+endif()
+option(TEAKRA_ENABLE_JIT "Build the x86-64 JIT (uses the xbyak::xbyak target, or finds xbyak)" ${TEAKRA_JIT_DEFAULT})
+
 # Set hard requirements for C++
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -87,6 +94,9 @@ endif()
 
 # External libraries
 add_subdirectory(externals)
+if (TEAKRA_ENABLE_JIT AND NOT TARGET xbyak::xbyak)
+    find_package(xbyak REQUIRED)
+endif()
 
 # Teakra project files
 add_subdirectory(src)

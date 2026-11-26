@@ -1,7 +1,7 @@
+#include <algorithm>
 #include <limits>
 #include "crash.h"
 #include "timer.h"
-#include "crash.h"
 
 namespace Teakra {
 
@@ -33,24 +33,25 @@ void Timer::Tick(u64 ticks) {
         return;
     if (count_mode == CountMode::EventCount)
         return;
-    if (ticks > counter) {
-        const u16 old_counter = counter;
-        if (count_mode == CountMode::AutoRestart) {
-            counter = ((u32)start_high << 16) | start_low;
-        } else if (count_mode == CountMode::FreeRunning) {
-            counter = 0xFFFFFFFF;
+    while (ticks > 0) {
+        if (counter == 0) {
+            if (count_mode == CountMode::AutoRestart) {
+                counter = ((u32)start_high << 16) | start_low;
+            } else if (count_mode == CountMode::FreeRunning) {
+                counter = 0xFFFFFFFF;
+            } else {
+                break;
+            }
+            --ticks;
+            continue;
         }
-        counter -= ticks - old_counter - 1;
-        if (old_counter != 0) {
-            interrupt_handler();
-        }
-    } else {
-        counter -= ticks;
+        const u64 step = std::min<u64>(ticks, counter);
+        counter -= static_cast<u32>(step);
+        ticks -= step;
         if (counter == 0) {
             interrupt_handler();
         }
     }
-
     UpdateMMIO();
 }
 

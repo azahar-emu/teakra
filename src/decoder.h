@@ -691,12 +691,6 @@ std::vector<Matcher<V>> GetDecodeTable() {
 #undef EXCEPT
 }
 
-
-
-
-
-
-
 // clang-format on
 
 template <typename V>

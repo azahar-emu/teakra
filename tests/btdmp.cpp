@@ -1,10 +1,10 @@
 #include <catch.hpp>
+#include <limits>
 #include <queue>
 #include "../src/btdmp.h"
 
 struct BtdmpTestEnvironment {
-    Teakra::CoreTiming core_timing;
-    Teakra::Btdmp btdmp{core_timing};
+    Teakra::Btdmp btdmp;
     int interrupt_counter = 0;
     std::queue<std::array<std::int16_t, 2>> sample_queue;
     BtdmpTestEnvironment() {
@@ -17,17 +17,17 @@ struct BtdmpTestEnvironment {
 TEST_CASE("Btdmp queueing", "[btdmp]") {
     BtdmpTestEnvironment env;
 
-    REQUIRE(env.btdmp.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.btdmp.GetMaxSkip() == std::numeric_limits<u64>::max());
     env.btdmp.SetTransmitEnable(1);
     env.btdmp.SetTransmitPeriod(1000);
 
     REQUIRE(env.btdmp.GetTransmitEmpty());
     REQUIRE(!env.btdmp.GetTransmitFull());
-    REQUIRE(env.btdmp.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.btdmp.GetMaxSkip() == std::numeric_limits<u64>::max());
 
     env.btdmp.Skip(3050);
     REQUIRE(env.interrupt_counter == 0);
-    REQUIRE(env.btdmp.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.btdmp.GetMaxSkip() == std::numeric_limits<u64>::max());
     REQUIRE(env.sample_queue.size() == 3);
     REQUIRE(env.btdmp.GetTransmitEmpty());
     REQUIRE(!env.btdmp.GetTransmitFull());
@@ -39,14 +39,14 @@ TEST_CASE("Btdmp queueing", "[btdmp]") {
 
     env.btdmp.Skip(949);
     REQUIRE(env.interrupt_counter == 0);
-    REQUIRE(env.btdmp.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.btdmp.GetMaxSkip() == std::numeric_limits<u64>::max());
     REQUIRE(env.sample_queue.size() == 0);
     REQUIRE(env.btdmp.GetTransmitEmpty());
     REQUIRE(!env.btdmp.GetTransmitFull());
 
     env.btdmp.Tick(1);
     REQUIRE(env.interrupt_counter == 0);
-    REQUIRE(env.btdmp.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.btdmp.GetMaxSkip() == std::numeric_limits<u64>::max());
     REQUIRE(env.sample_queue.size() == 1);
     REQUIRE(env.btdmp.GetTransmitEmpty());
     REQUIRE(!env.btdmp.GetTransmitFull());
@@ -56,14 +56,14 @@ TEST_CASE("Btdmp queueing", "[btdmp]") {
 
     env.btdmp.Skip(999);
     REQUIRE(env.interrupt_counter == 0);
-    REQUIRE(env.btdmp.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.btdmp.GetMaxSkip() == std::numeric_limits<u64>::max());
     REQUIRE(env.sample_queue.size() == 0);
     REQUIRE(env.btdmp.GetTransmitEmpty());
     REQUIRE(!env.btdmp.GetTransmitFull());
 
     env.btdmp.Skip(1);
     REQUIRE(env.interrupt_counter == 0);
-    REQUIRE(env.btdmp.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.btdmp.GetMaxSkip() == std::numeric_limits<u64>::max());
     REQUIRE(env.sample_queue.size() == 1);
     REQUIRE(env.btdmp.GetTransmitEmpty());
     REQUIRE(!env.btdmp.GetTransmitFull());
@@ -88,7 +88,7 @@ TEST_CASE("Btdmp queueing", "[btdmp]") {
 
     env.btdmp.Tick(1);
     REQUIRE(env.interrupt_counter == 1);
-    REQUIRE(env.btdmp.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.btdmp.GetMaxSkip() == std::numeric_limits<u64>::max());
     REQUIRE(env.sample_queue.size() == 1);
     REQUIRE(env.btdmp.GetTransmitEmpty());
     REQUIRE(!env.btdmp.GetTransmitFull());
@@ -183,7 +183,7 @@ TEST_CASE("Btdmp queueing", "[btdmp]") {
 
     env.btdmp.Tick(1);
     REQUIRE(env.interrupt_counter == 2);
-    REQUIRE(env.btdmp.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.btdmp.GetMaxSkip() == std::numeric_limits<u64>::max());
     REQUIRE(env.sample_queue.size() == 1);
     REQUIRE(env.btdmp.GetTransmitEmpty());
     REQUIRE(!env.btdmp.GetTransmitFull());

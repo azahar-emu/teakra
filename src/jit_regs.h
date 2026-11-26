@@ -7,7 +7,6 @@
 #include "crash.h"
 #include "bit_field.h"
 #include "common_types.h"
-#include "memory_interface.h"
 #include <xbyak/xbyak.h>
 
 namespace Teakra {
@@ -319,8 +318,6 @@ union Cfg {
     }
 };
 
-class MemoryInterfaceUnit;
-
 // NOTE: The jit relies heavily on the member order, do not swap!
 struct JitRegisters {
     JitRegisters() {
@@ -337,11 +334,21 @@ struct JitRegisters {
         *this = JitRegisters();
     }
 
-    u32 x_offset = MemoryInterfaceUnit::DataMemoryOffset;
-    u32 y_offset = MemoryInterfaceUnit::DataMemoryOffset;
-    u32 z_offset = MemoryInterfaceUnit::DataMemoryOffset;
-    u16 page_mode = 0;
-    u16 mmio_base = 0x8000;
+    // Data memory translation, kept in sync with the MemoryInterfaceUnit. Addresses up to
+    // data_split use data_lo, the rest data_hi.
+    u8* data_lo = nullptr;
+    u8* data_hi = nullptr;
+    u32 mmio_base = 0x8000;
+    u16 data_split = 0xFFFF;
+
+    // Arguments and result of calls out of a block.
+    u16 tmp_addr = 0;
+    u16 tmp_value = 0;
+
+    // Loops that restart at their own block run without returning to the dispatcher while
+    // loop_budget lasts. loop_cycles counts the cycles of the extra iterations.
+    s32 loop_budget = 0;
+    u32 loop_cycles = 0;
 
     /** Program control unit **/
 
@@ -547,7 +554,7 @@ struct JitRegisters {
     }
 
     void GetStt0(Xbyak::CodeGenerator& c, Xbyak::Reg16 out) {
-        c.mov(out, FLAGS);
+        c.mov(out, FLAGS.cvt16());
         c.shr(out, 1); // Flags is the same as Stt0 but has fz in bit0, shift it out.
         c.and_(out, Stt0::Mask());
     }
@@ -657,25 +664,40 @@ struct JitRegisters {
     }
 
     void GetSt0(Xbyak::CodeGenerator& c, Xbyak::Reg16 out, Mod0& mod0_const) {
-        c.mov(out, mod0_const.sat.Value() << 15);
-        c.mov(out.cvt8(), byte[REGS + offsetof(JitRegisters, ie)]);
-        c.ror(out, 1);
-        c.mov(esi, dword[REGS + offsetof(JitRegisters, im)]);
-        c.or_(out.cvt8(), sil);
-        c.shr(rsi, 15);
-        c.or_(out.cvt8(), sil);
-        c.ror(out, 2);
-        c.mov(si, FLAGS.cvt16());
-        c.shr(si, 2);
-        c.shl(si, 1);
-        c.or_(out.cvt8(), FLAGS.cvt8());
-        c.and_(out.cvt8(), 0b11);
-        c.or_(out.cvt8(), sil);
-        c.ror(out, 8);
-        c.rorx(rsi, A[0], 32);
-        c.and_(rsi, 0xFF);
-        c.or_(out, sil);
-        c.ror(out, 4);
+        ASSERT(out.getIdx() != esi.getIdx());
+        const Reg32 out32 = out.cvt32();
+        c.movzx(out32, word[REGS + offsetof(JitRegisters, ie)]);
+        c.shl(out32, decltype(St0::ie)::position);
+        if (mod0_const.sat) {
+            c.or_(out32, decltype(St0::sat)::mask);
+        }
+        c.movzx(esi, word[REGS + offsetof(JitRegisters, im)]);
+        c.shl(esi, decltype(St0::im0)::position);
+        c.or_(out32, esi);
+        c.movzx(esi, word[REGS + offsetof(JitRegisters, im) + sizeof(u16)]);
+        c.shl(esi, decltype(St0::im1)::position);
+        c.or_(out32, esi);
+        c.mov(esi, FLAGS);
+        c.and_(esi, decltype(Flags::fr)::mask);
+        c.shl(esi, decltype(St0::fr)::position - decltype(Flags::fr)::position);
+        c.or_(out32, esi);
+        c.test(FLAGS, decltype(Flags::flm)::mask | decltype(Flags::fvl)::mask);
+        c.setnz(sil);
+        c.movzx(esi, sil);
+        c.shl(esi, decltype(St0::flm_fvl)::position);
+        c.or_(out32, esi);
+        // fe, fc0, fv, fn, fm and fz keep their order.
+        c.mov(esi, FLAGS);
+        c.and_(esi, decltype(Flags::fe)::mask | decltype(Flags::fc0)::mask |
+                        decltype(Flags::fv)::mask | decltype(Flags::fn)::mask |
+                        decltype(Flags::fm)::mask | decltype(Flags::fz)::mask);
+        c.shl(esi, decltype(St0::fe)::position - decltype(Flags::fe)::position);
+        c.or_(out32, esi);
+        c.mov(rsi, A[0]);
+        c.shr(rsi, 32);
+        c.and_(esi, 0xF);
+        c.shl(esi, decltype(St0::a0e_alias)::position);
+        c.or_(out32, esi);
     }
 
     template <typename T>
@@ -685,7 +707,7 @@ struct JitRegisters {
             c.and_(byte[REGS + offsetof(JitRegisters, mod0)], ~decltype(Mod0::sat)::mask);
             c.bt(value, decltype(St0::sat)::position);
             c.setc(sil);
-            c.or_(word[REGS + offsetof(JitRegisters, mod0)], sil);
+            c.or_(byte[REGS + offsetof(JitRegisters, mod0)], sil);
 
             // Set ie, im0, im1
             c.bt(value, decltype(St0::ie)::position);
@@ -751,27 +773,24 @@ struct JitRegisters {
     template <typename T>
     void SetSt1(Xbyak::CodeGenerator& c, T value, Mod0& mod0_const, Mod1& mod1_const) {
         if constexpr (std::is_base_of_v<Xbyak::Reg, T>) {
-            Mod0 mod0 = mod0_const;
-            mod0.ps0.Assign(0);
-            const u32 mod1mod0 = mod1_const.raw | (static_cast<u32>(mod0.raw) << 16);
+            // page
+            c.mov(byte[REGS + offsetof(JitRegisters, mod1)], value.cvt8());
 
-            // Load mod1 and mod0 in a single 32-bit load
-            c.mov(rsi.cvt32(), mod1mod0);
-            c.mov(rsi.cvt8(), value.cvt8());
+            // ps0
+            c.mov(esi, value.cvt32());
+            c.shr(esi, decltype(St1::ps0_alias)::position);
+            c.and_(esi, 3);
+            c.shl(esi, decltype(Mod0::ps0)::position);
+            c.and_(word[REGS + offsetof(JitRegisters, mod0)], ~decltype(Mod0::ps0)::mask);
+            c.or_(word[REGS + offsetof(JitRegisters, mod0)], si);
 
-            // Replace ps0 and store back
-            c.shr(value, decltype(St1::ps0_alias)::position);
-            c.shl(value, 32 - decltype(St1::ps0_alias)::bits);
-            c.shr(value.cvt32(), 4);
-            c.or_(rsi, value.cvt32());
-            c.mov(dword[REGS + offsetof(JitRegisters, mod1)], rsi.cvt32());
-
-            // Replace upper word of a[0] with sign extended a0e.
-            c.mov(A[1].cvt32(), A[1].cvt32()); // Clear top 32 bits of A[0]
-            c.and_(value, decltype(St0::a0e_alias)::mask);
-            c.shl(value, 64 - decltype(St0::a0e_alias)::position - decltype(St0::a0e_alias)::bits);
-            c.sar(value, 32 - decltype(St0::a0e_alias)::bits);
-            c.or_(A[1], value);
+            // Replace upper word of a[1] with sign extended a1e.
+            c.mov(esi, value.cvt32());
+            c.shl(esi, 32 - decltype(St1::a1e_alias)::position - decltype(St1::a1e_alias)::bits);
+            c.sar(esi, 32 - decltype(St1::a1e_alias)::bits);
+            c.shl(rsi, 32);
+            c.mov(A[1].cvt32(), A[1].cvt32());
+            c.or_(A[1], rsi);
         } else {
             const St1 reg{.raw = value};
             // Copy to lower byte of mod1 which is page
@@ -789,21 +808,49 @@ struct JitRegisters {
         }
     }
 
+    // st2 also holds m0-m5 (mod2), im2, s and ou0/ou1 (mod0). iu and ip are read only.
+    static constexpr u16 St2Mod2Mask = 0x3F;
+    static constexpr u16 St2Mod0Mask = decltype(Mod0::s)::mask | decltype(Mod0::ou0)::mask |
+                                       decltype(Mod0::ou1)::mask;
+
     template <typename T>
     void SetSt2(Xbyak::CodeGenerator& c, T value, Mod0& mod0_const, Mod2& mod2_const) {
         if constexpr (std::is_base_of_v<Xbyak::Reg, T>) {
-            UNREACHABLE();
+            c.mov(esi, value.cvt32());
+            c.and_(esi, St2Mod2Mask);
+            c.and_(word[REGS + offsetof(JitRegisters, mod2)], ~St2Mod2Mask);
+            c.or_(word[REGS + offsetof(JitRegisters, mod2)], si);
+            c.mov(esi, value.cvt32());
+            c.and_(esi, St2Mod0Mask);
+            c.and_(word[REGS + offsetof(JitRegisters, mod0)], ~St2Mod0Mask);
+            c.or_(word[REGS + offsetof(JitRegisters, mod0)], si);
+            c.bt(value.cvt32(), decltype(St2::im2)::position);
+            c.setc(byte[REGS + offsetof(JitRegisters, im) + sizeof(u16) * 2]);
         } else {
             const St2 reg{.raw = value};
-
-            // Update mod0 and mod2
-            mod0_const.s.Assign(reg.s.Value());
-            mod2_const.m1_5.Assign(reg.m1_5.Value());
-
-            // Update im, ou. iu and ip are read only
+            mod2_const.raw = (mod2_const.raw & ~St2Mod2Mask) | (value & St2Mod2Mask);
+            mod0_const.raw = (mod0_const.raw & ~St2Mod0Mask) | (value & St2Mod0Mask);
+            c.mov(word[REGS + offsetof(JitRegisters, mod2)], mod2_const.raw);
+            c.mov(word[REGS + offsetof(JitRegisters, mod0)], mod0_const.raw);
             c.mov(word[REGS + offsetof(JitRegisters, im) + sizeof(u16) * 2], reg.im2.Value());
-            c.mov(dword[REGS + offsetof(JitRegisters, ou)], reg.ou0.Value() | (static_cast<u32>(reg.ou1.Value()) << 16));
         }
+    }
+
+    void GetSt2(Xbyak::CodeGenerator& c, Xbyak::Reg16 out, Mod0& mod0_const, Mod2& mod2_const) {
+        ASSERT(out.getIdx() != esi.getIdx());
+        const Reg32 out32 = out.cvt32();
+        c.mov(out32, (mod2_const.raw & St2Mod2Mask) | (mod0_const.raw & St2Mod0Mask));
+        const auto bit = [&](std::size_t offset, u32 position) {
+            c.movzx(esi, word[REGS + offset]);
+            c.shl(esi, position);
+            c.or_(out32, esi);
+        };
+        bit(offsetof(JitRegisters, im) + sizeof(u16) * 2, decltype(St2::im2)::position);
+        bit(offsetof(JitRegisters, iu), decltype(St2::iu0)::position);
+        bit(offsetof(JitRegisters, iu) + sizeof(u16), decltype(St2::iu1)::position);
+        bit(offsetof(JitRegisters, ip) + sizeof(u16) * 2, decltype(St2::ip2)::position);
+        bit(offsetof(JitRegisters, ip), decltype(St2::ip0)::position);
+        bit(offsetof(JitRegisters, ip) + sizeof(u16), decltype(St2::ip1)::position);
     }
 
     void GetMod3(Xbyak::CodeGenerator& c, Xbyak::Reg64 out) {

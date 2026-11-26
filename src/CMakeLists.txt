@@ -9,11 +9,9 @@ add_library(teakra
     apbp.cpp
     apbp.h
     bit.h
-    bit_field.h
     btdmp.cpp
     btdmp.h
     common_types.h
-    core_timing.h
     crash.h
     decoder.h
     disassembler.cpp
@@ -26,8 +24,6 @@ add_library(teakra
     matcher.h
     memory_interface.cpp
     memory_interface.h
-    memory_pool.cpp
-    memory_pool.h
     mmio.cpp
     mmio.h
     operand.h
@@ -35,32 +31,28 @@ add_library(teakra
     processor.cpp
     processor.h
     shared_memory.h
-    swap.h
     teakra.cpp
     test.h
     test_generator.cpp
     test_generator.h
-    xbyak_abi.h
-    #ir/basic_block.cpp
-    #ir/basic_block.h
-    #ir/ir_emitter.cpp
-    #ir/ir_emitter.h
-    #ir/microinstruction.cpp
-    #ir/microinstruction.h
-    #ir/value.cpp
-    #ir/value.h
-    #ir/opcode.h
-    jit_no_ir.cpp
-    jit_no_ir.h
-    jit_regs.h
-    cityhash.cpp
-    cityhash.h
-    hash.h
 )
+
+if (TEAKRA_ENABLE_JIT)
+    target_sources(teakra PRIVATE
+        bit_field.h
+        jit_regs.h
+        jit_x64.cpp
+        jit_x64.h
+        swap.h
+        xbyak_abi.h
+    )
+    target_compile_definitions(teakra PRIVATE TEAKRA_ENABLE_JIT)
+    target_link_libraries(teakra PRIVATE $<BUILD_INTERFACE:xbyak::xbyak>)
+endif()
 
 create_target_directory_groups(teakra)
 
-target_link_libraries(teakra PRIVATE Threads::Threads boost tsl::robin_map xbyak::xbyak)
+target_link_libraries(teakra PRIVATE Threads::Threads)
 target_include_directories(teakra
                            PUBLIC
                             "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"

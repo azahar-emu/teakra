@@ -4,10 +4,14 @@ add_executable(test_verifier
     main.cpp
 )
 create_target_directory_groups(test_verifier)
-target_link_libraries(test_verifier PRIVATE teakra xbyak::xbyak)
+target_link_libraries(test_verifier PRIVATE teakra)
 target_include_directories(test_verifier PRIVATE .)
 target_include_directories(test_verifier PRIVATE ../../include/teakra/impl/)
 target_compile_options(test_verifier PRIVATE ${TEAKRA_CXX_FLAGS})
+if (TEAKRA_ENABLE_JIT)
+    target_compile_definitions(test_verifier PRIVATE TEAKRA_ENABLE_JIT)
+    target_link_libraries(test_verifier PRIVATE xbyak::xbyak)
+endif()
 
 
 # Test related stuff
@@ -23,4 +27,7 @@ if(TEAKRA_RUN_TESTS)
   endif()
 
   add_test(NAME tests COMMAND test_verifier "${TEAKRA_TEST_ASSETS_DIR}/teaklite2_tests_result.bin")
+  if (TEAKRA_ENABLE_JIT)
+    add_test(NAME jit_tests COMMAND test_verifier --jit "${TEAKRA_TEST_ASSETS_DIR}/teaklite2_tests_result.bin")
+  endif()
 endif(TEAKRA_RUN_TESTS)

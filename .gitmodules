@@ -1,9 +1,0 @@
-[submodule "externals/xbyak"]
-	path = externals/xbyak
-	url = https://github.com/herumi/xbyak
-[submodule "externals/mcl"]
-	path = externals/mcl
-	url = https://github.com/merryhime/mcl
-[submodule "externals/robin-map"]
-	path = externals/robin-map
-	url = https://github.com/Tessil/robin-map

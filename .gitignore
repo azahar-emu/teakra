@@ -37,9 +37,3 @@ teakra.out.*
 
 # cmake and ctest temporary files
 /Testing
-
-# Result binaries
-*.3dsx
-*.cia
-*.cxi
-*.elf

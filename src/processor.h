@@ -8,20 +8,20 @@ namespace Teakra {
 
 class MemoryInterface;
 struct RegisterState;
-class Interpreter;
 
 class Processor {
 public:
     Processor(CoreTiming& core_timing, MemoryInterface& memory_interface, bool use_jit);
     ~Processor();
     void Reset();
-    u32 Run(u32 cycles, Interpreter* debug_interp);
+    void Run(unsigned cycles);
     void SignalInterrupt(u32 i);
     void SignalVectoredInterrupt(u32 address, bool context_switch);
 
     RegisterState& GetRegisterState();
     const RegisterState& GetRegisterState() const;
-    Interpreter& Interp();
+
+    static bool IsJitSupported();
 
 private:
     struct Impl;
