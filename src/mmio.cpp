@@ -313,7 +313,7 @@ MMIORegion::MMIORegion(MemoryInterfaceUnit& miu, ICU& icu, Apbp& apbp_from_cpu, 
     impl->cells[0x200].get = std::bind(&ICU::GetRequest, &icu);
     impl->cells[0x202].set = std::bind(&ICU::Acknowledge, &icu, _1);
     impl->cells[0x202].get = std::bind(&ICU::GetAcknowledge, &icu);
-    impl->cells[0x204].set = std::bind(&ICU::Trigger, &icu, _1);
+    impl->cells[0x204].set = [&icu](u16 value) { icu.Trigger(value); };
     impl->cells[0x204].get = std::bind(&ICU::GetTrigger, &icu);
     impl->cells[0x206].set = std::bind(&ICU::SetEnable, &icu, 0, _1);
     impl->cells[0x206].get = std::bind(&ICU::GetEnable, &icu, 0);

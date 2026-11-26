@@ -23,7 +23,8 @@ public:
     u16 GetAcknowledge() {
         return 0;
     }
-    void Trigger(u16 irq_bits) {
+    // source_delay is the number of cycles the source takes to raise the request.
+    void Trigger(u16 irq_bits, u32 source_delay = 0) {
         std::lock_guard lock(mutex);
         IrqBits bits(irq_bits);
         request |= bits;
@@ -31,11 +32,12 @@ public:
             if (bits[irq]) {
                 for (u32 interrupt = 0; interrupt < enabled.size(); ++interrupt) {
                     if (enabled[interrupt][irq]) {
-                        on_interrupt(interrupt);
+                        on_interrupt(interrupt, source_delay);
                     }
                 }
                 if (vectored_enabled[irq]) {
-                    on_vectored_interrupt(GetVector(irq), vector_context_switch[irq] != 0);
+                    on_vectored_interrupt(GetVector(irq), vector_context_switch[irq] != 0,
+                                          source_delay);
                 }
             }
         }
@@ -43,8 +45,8 @@ public:
     u16 GetTrigger() {
         return 0;
     }
-    void TriggerSingle(u32 irq) {
-        Trigger(1 << irq);
+    void TriggerSingle(u32 irq, u32 source_delay = 0) {
+        Trigger(1 << irq, source_delay);
     }
     void SetEnable(u32 interrupt_index, u16 irq_bits) {
         std::lock_guard lock(mutex);
@@ -67,8 +69,8 @@ public:
         return vector_low[irq] | ((u32)vector_high[irq] << 16);
     }
 
-    void SetInterruptHandler(std::function<void(u32)> interrupt,
-                             std::function<void(u32, bool)> vectored_interrupt) {
+    void SetInterruptHandler(std::function<void(u32, u32)> interrupt,
+                             std::function<void(u32, bool, u32)> vectored_interrupt) {
         on_interrupt = std::move(interrupt);
         on_vectored_interrupt = std::move(vectored_interrupt);
     }
@@ -77,8 +79,8 @@ public:
     std::array<u16, 16> vector_context_switch;
 
 private:
-    std::function<void(u32)> on_interrupt;
-    std::function<void(u32, bool)> on_vectored_interrupt;
+    std::function<void(u32, u32)> on_interrupt;
+    std::function<void(u32, bool, u32)> on_vectored_interrupt;
 
     IrqBits request;
     std::array<IrqBits, 3> enabled;

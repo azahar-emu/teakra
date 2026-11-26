@@ -32,6 +32,7 @@ Processor::~Processor() = default;
 void Processor::Reset() {
     impl->regs = RegisterState();
     impl->interpreter.ClearOverrun();
+    impl->interpreter.ResetInterruptRequests();
 #ifdef TEAKRA_ENABLE_JIT
     if (impl->jit) {
         impl->jit->Reset();
@@ -49,23 +50,23 @@ void Processor::Run(unsigned cycles) {
     impl->interpreter.Run(cycles);
 }
 
-void Processor::SignalInterrupt(u32 i) {
+void Processor::SignalInterrupt(u32 i, u32 source_delay) {
 #ifdef TEAKRA_ENABLE_JIT
     if (impl->jit) {
-        impl->jit->SignalInterrupt(i);
+        impl->jit->SignalInterrupt(i, source_delay);
         return;
     }
 #endif
-    impl->interpreter.SignalInterrupt(i);
+    impl->interpreter.SignalInterrupt(i, source_delay);
 }
-void Processor::SignalVectoredInterrupt(u32 address, bool context_switch) {
+void Processor::SignalVectoredInterrupt(u32 address, bool context_switch, u32 source_delay) {
 #ifdef TEAKRA_ENABLE_JIT
     if (impl->jit) {
-        impl->jit->SignalVectoredInterrupt(address, context_switch);
+        impl->jit->SignalVectoredInterrupt(address, context_switch, source_delay);
         return;
     }
 #endif
-    impl->interpreter.SignalVectoredInterrupt(address, context_switch);
+    impl->interpreter.SignalVectoredInterrupt(address, context_switch, source_delay);
 }
 
 Teakra::RegisterState& Processor::GetRegisterState() {

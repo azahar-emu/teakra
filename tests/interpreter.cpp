@@ -40,8 +40,11 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
     timer[0].start_high = 0;
     timer[0].Restart();
 
-    // Cycles: a taken br or brr costs 3, inc 1. An interrupt signalled while an instruction runs is
-    // taken after the next one.
+    // Cycles: a taken br or brr costs 3, inc 1. The timer signals at the end of the instruction
+    // during which it reaches 0. The test wires the timer to the core directly, so the request
+    // reaches the core 3 cycles later (InterruptRequest). It is taken after the instruction during
+    // which it arrives, for 4 cycles (InterruptEntry). Cycles that a Run goes over are taken from
+    // the next Run.
     SECTION("Simple counting") {
         memory_interface.ProgramWrite(0x0001, 0x1000);
         interpreter.Run(3 + 5);
@@ -51,8 +54,8 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
 
     SECTION("Counting with interrupt") {
         memory_interface.ProgramWrite(0x0001, 0x1000);
-        interpreter.Run(3 + 7 + 3 + 3);
-        REQUIRE(regs.a[0] == 7);
+        interpreter.Run(3 + 9 + 4 + 3 + 3);
+        REQUIRE(regs.a[0] == 9);
         REQUIRE(regs.a[1] == 3);
     }
 
@@ -62,7 +65,7 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 0);
 
-        interpreter.Run(3 + 3 + 1);
+        interpreter.Run(3 + 4 + 3 + 1);
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 1);
     }
@@ -73,21 +76,21 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 0);
 
-        interpreter.Run(2 + 3 + 2);
+        interpreter.Run(6 + 3 + 2);
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 2);
     }
 
     SECTION("Counting with idle and interrupt 3") {
         memory_interface.ProgramWrite(0x0001, 0x100D);
-        interpreter.Run(3 + 6 + 3 + 3 + 2);
+        interpreter.Run(3 + 6 + 3 + 4 + 3 + 2);
         REQUIRE(regs.a[0] == 3);
         REQUIRE(regs.a[1] == 2);
     }
 
     SECTION("Idle with interrupt 1") {
         memory_interface.ProgramWrite(0x0001, 0x1010);
-        interpreter.Run(3 + 6 + 3 + 3 + 2);
+        interpreter.Run(3 + 6 + 3 + 4 + 3 + 2);
         REQUIRE(regs.a[0] == 0);
         REQUIRE(regs.a[1] == 2);
     }
@@ -98,7 +101,7 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
         REQUIRE(regs.a[0] == 0);
         REQUIRE(regs.a[1] == 0);
 
-        interpreter.Run(2 + 3 + 2);
+        interpreter.Run(6 + 3 + 2);
         REQUIRE(regs.a[0] == 0);
         REQUIRE(regs.a[1] == 2);
     }
@@ -114,13 +117,13 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
             REQUIRE(regs.a[0] == 0);
             REQUIRE(regs.a[1] == 0);
 
-            interpreter.Run(1 + 3 + 3 + 2);
+            interpreter.Run(1 + 3 + 4 + 3 + 2);
             REQUIRE(regs.a[0] == 0);
             REQUIRE(regs.a[1] == 2);
         }
 
         SECTION("Run over the interrupt") {
-            interpreter.Run(2 + 3 + 3 + 2);
+            interpreter.Run(2 + 3 + 4 + 3 + 2);
             REQUIRE(regs.a[0] == 0);
             REQUIRE(regs.a[1] == 2);
         }
