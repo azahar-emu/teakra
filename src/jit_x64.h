@@ -2508,7 +2508,10 @@ public:
     }
 
     void break_() {
-        NOT_IMPLEMENTED();
+        c.sub(word[REGS + offsetof(JitRegisters, bcn)], 1);
+        c.setnz(al);
+        c.movzx(eax, al);
+        c.mov(word[REGS + offsetof(JitRegisters, lp)], ax);
     }
 
     void call(Address18_16 addr_low, Address18_2 addr_high, Cond cond) {
@@ -3942,17 +3945,39 @@ public:
         c.sub(count, 8);
     }
 
+    void ExpToSv(Reg64 value) {
+        const Reg64 count = rcx;
+        Exp(value, count);
+        c.mov(word[REGS + offsetof(JitRegisters, sv)], count.cvt16());
+    }
+
+    void ExpStore(Ax b) {
+        const Reg64 value = rax;
+        c.movsx(value, word[REGS + offsetof(JitRegisters, sv)]);
+        SetAcc(b.GetName(), value);
+    }
+
     void exp(Bx a) {
-        NOT_IMPLEMENTED();
+        const Reg64 value = rbx;
+        GetAcc(value, a.GetName());
+        ExpToSv(value);
     }
     void exp(Bx a, Ax b) {
-        NOT_IMPLEMENTED();
+        exp(a);
+        ExpStore(b);
     }
     void exp(Rn a, StepZIDS as) {
-        NOT_IMPLEMENTED();
+        const Reg64 address = rax;
+        RnAddressAndModify(a.Index(), as.GetName(), address);
+        const Reg64 value = rbx;
+        LoadFromMemory(value, address);
+        c.movsx(value, value.cvt16());
+        c.shl(value, 16);
+        ExpToSv(value);
     }
     void exp(Rn a, StepZIDS as, Ax b) {
-        NOT_IMPLEMENTED();
+        exp(a, as);
+        ExpStore(b);
     }
     void exp(Register a) {
         const Reg64 value = rax;
@@ -3969,13 +3994,19 @@ public:
         c.mov(word[REGS + offsetof(JitRegisters, sv)], count.cvt16());
     }
     void exp(Register a, Ax b) {
-        NOT_IMPLEMENTED();
+        exp(a);
+        ExpStore(b);
     }
     void exp_r6() {
-        NOT_IMPLEMENTED();
+        const Reg64 value = rbx;
+        RegToBus16(RegName::r6, value);
+        c.shl(value, 16);
+        SignExtend(value, 32);
+        ExpToSv(value);
     }
     void exp_r6(Ax b) {
-        NOT_IMPLEMENTED();
+        exp_r6();
+        ExpStore(b);
     }
 
     void lim(Ax a, Ax b) {
