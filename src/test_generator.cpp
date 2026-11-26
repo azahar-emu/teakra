@@ -5,7 +5,6 @@
 #include <random>
 #include <unordered_set>
 #include "common_types.h"
-#include "crash.h"
 #include "decoder.h"
 #include "operand.h"
 #include "test.h"

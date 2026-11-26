@@ -6,7 +6,9 @@
 #include "../src/shared_memory.h"
 
 TEST_CASE("Cycle accuracy", "[interpreter]") {
-    Teakra::CoreTiming core_timing;
+    std::array<Teakra::Timer, 2> timer{};
+    std::array<Teakra::Btdmp, 2> btdmp{};
+    Teakra::CoreTiming core_timing{timer, btdmp};
     Teakra::SharedMemory shared_memory;
     Teakra::MemoryInterfaceUnit miu;
     Teakra::MemoryInterface memory_interface{shared_memory, miu};
@@ -31,44 +33,12 @@ TEST_CASE("Cycle accuracy", "[interpreter]") {
 
     memory_interface.ProgramWrite(0x1010, 0x57F0); // brr -1
 
-    class InterruptGenerator : public Teakra::CoreTiming::Callbacks {
-        Teakra::Interpreter& interpreter;
-        u64 counter = 0;
-
-    public:
-        InterruptGenerator(Teakra::Interpreter& interpreter) : interpreter(interpreter) {}
-
-        void SetCounter(u64 new_counter) {
-            counter = new_counter;
-        }
-
-        void Tick(u64 ticks) override {
-            if (counter != 0) {
-                counter -= ticks;
-                if (counter == 0) {
-                    interpreter.SignalInterrupt(0);
-                }
-            }
-        }
-
-        u64 GetMaxSkip() const override {
-            if (counter != 0) {
-                return counter - 1;
-            } else {
-                return Infinity;
-            }
-        }
-
-        void Skip(u64 ticks) override {
-            if (counter != 0) {
-                counter -= ticks;
-            }
-        }
-    };
-
-    InterruptGenerator interrupt_generator(interpreter);
-    interrupt_generator.SetCounter(7);
-    core_timing.RegisterCallbacks(&interrupt_generator);
+    // Fires interrupt 0 seven cycles in.
+    timer[0].SetInterruptHandler([&interpreter]() { interpreter.SignalInterrupt(0); });
+    timer[0].count_mode = Teakra::Timer::CountMode::Single;
+    timer[0].start_low = 7;
+    timer[0].start_high = 0;
+    timer[0].Restart();
 
     SECTION("Simple counting") {
         memory_interface.ProgramWrite(0x0001, 0x1000);

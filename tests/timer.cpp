@@ -1,9 +1,9 @@
 #include <catch.hpp>
+#include <limits>
 #include "../src/timer.h"
 
 struct TimerTestEnvironment {
-    Teakra::CoreTiming core_timing;
-    Teakra::Timer timer{core_timing};
+    Teakra::Timer timer;
     int interrupt_counter = 0;
     TimerTestEnvironment() {
         timer.SetInterruptHandler([&]() { interrupt_counter++; });
@@ -42,20 +42,20 @@ TEST_CASE("Single mode", "[timer]") {
     REQUIRE(env.timer.counter_low == 1);
     REQUIRE(env.timer.counter_high == 0);
     REQUIRE(env.interrupt_counter == 0);
-    REQUIRE(env.timer.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.timer.GetMaxSkip() == std::numeric_limits<u64>::max());
 
     env.timer.pause = 0;
     env.timer.Tick(1);
     REQUIRE(env.timer.counter_low == 0);
     REQUIRE(env.timer.counter_high == 0);
     REQUIRE(env.interrupt_counter == 1);
-    REQUIRE(env.timer.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.timer.GetMaxSkip() == std::numeric_limits<u64>::max());
 
     env.timer.Tick(1);
     REQUIRE(env.timer.counter_low == 0);
     REQUIRE(env.timer.counter_high == 0);
     REQUIRE(env.interrupt_counter == 1);
-    REQUIRE(env.timer.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.timer.GetMaxSkip() == std::numeric_limits<u64>::max());
 }
 
 TEST_CASE("Auto restart mode", "[timer]") {
@@ -90,7 +90,7 @@ TEST_CASE("Auto restart mode", "[timer]") {
     REQUIRE(env.timer.counter_low == 1);
     REQUIRE(env.timer.counter_high == 0);
     REQUIRE(env.interrupt_counter == 0);
-    REQUIRE(env.timer.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.timer.GetMaxSkip() == std::numeric_limits<u64>::max());
 
     env.timer.pause = 0;
     env.timer.Tick(1);
@@ -147,7 +147,7 @@ TEST_CASE("Free running mode", "[timer]") {
     REQUIRE(env.timer.counter_low == 1);
     REQUIRE(env.timer.counter_high == 0);
     REQUIRE(env.interrupt_counter == 0);
-    REQUIRE(env.timer.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.timer.GetMaxSkip() == std::numeric_limits<u64>::max());
 
     env.timer.pause = 0;
     env.timer.Tick(1);
@@ -174,21 +174,21 @@ TEST_CASE("Event counting restart mode", "[timer]") {
     REQUIRE(env.timer.counter_low == 5);
     REQUIRE(env.timer.counter_high == 0);
     REQUIRE(env.interrupt_counter == 0);
-    REQUIRE(env.timer.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.timer.GetMaxSkip() == std::numeric_limits<u64>::max());
 
     env.timer.Tick(1);
 
     REQUIRE(env.timer.counter_low == 5);
     REQUIRE(env.timer.counter_high == 0);
     REQUIRE(env.interrupt_counter == 0);
-    REQUIRE(env.timer.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.timer.GetMaxSkip() == std::numeric_limits<u64>::max());
 
     env.timer.TickEvent();
 
     REQUIRE(env.timer.counter_low == 4);
     REQUIRE(env.timer.counter_high == 0);
     REQUIRE(env.interrupt_counter == 0);
-    REQUIRE(env.timer.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.timer.GetMaxSkip() == std::numeric_limits<u64>::max());
 
     env.timer.pause = 1;
     env.timer.TickEvent();
@@ -196,7 +196,7 @@ TEST_CASE("Event counting restart mode", "[timer]") {
     REQUIRE(env.timer.counter_low == 4);
     REQUIRE(env.timer.counter_high == 0);
     REQUIRE(env.interrupt_counter == 0);
-    REQUIRE(env.timer.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.timer.GetMaxSkip() == std::numeric_limits<u64>::max());
 
     env.timer.pause = 0;
     env.timer.TickEvent();
@@ -206,19 +206,19 @@ TEST_CASE("Event counting restart mode", "[timer]") {
     REQUIRE(env.timer.counter_low == 1);
     REQUIRE(env.timer.counter_high == 0);
     REQUIRE(env.interrupt_counter == 0);
-    REQUIRE(env.timer.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.timer.GetMaxSkip() == std::numeric_limits<u64>::max());
 
     env.timer.TickEvent();
 
     REQUIRE(env.timer.counter_low == 0);
     REQUIRE(env.timer.counter_high == 0);
     REQUIRE(env.interrupt_counter == 1);
-    REQUIRE(env.timer.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.timer.GetMaxSkip() == std::numeric_limits<u64>::max());
 
     env.timer.TickEvent();
 
     REQUIRE(env.timer.counter_low == 0);
     REQUIRE(env.timer.counter_high == 0);
     REQUIRE(env.interrupt_counter == 1);
-    REQUIRE(env.timer.GetMaxSkip() == Teakra::CoreTiming::Callbacks::Infinity);
+    REQUIRE(env.timer.GetMaxSkip() == std::numeric_limits<u64>::max());
 }

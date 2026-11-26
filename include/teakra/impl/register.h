@@ -4,7 +4,6 @@
 #include <array>
 #include <memory>
 #include <vector>
-#include "../../../src/bit_field.h"
 #include "../../../src/common_types.h"
 #include "../../../src/crash.h"
 #include "../../../src/operand.h"
@@ -58,6 +57,7 @@ struct RegisterState {
     u16 s = 0;    // 1-bit, shift mode. 0 - arithmetic, 1 - logic
     u16 sv = 0;   // 16-bit two's complement shift value
 
+    // 1-bit flags
     u16 fz = 0;  // zero flag
     u16 fm = 0;  // negative flag
     u16 fn = 0;  // normalized flag
@@ -585,7 +585,7 @@ using mod2 = PseudoRegister<
     ProxySlot<ArrayRedirector<8, &RegisterState::br, 6>, 14, 1>,
     ProxySlot<ArrayRedirector<8, &RegisterState::br, 7>, 15, 1>
 >;
-using mod3 = PseudoRegister<    // Static
+using mod3 = PseudoRegister<
     ProxySlot<Redirector<&RegisterState::nimc>, 0, 1>,
     ProxySlot<ArrayRedirector<3, &RegisterState::ic, 0>, 1, 1>,
     ProxySlot<ArrayRedirector<3, &RegisterState::ic, 1>, 2, 1>,
@@ -604,7 +604,7 @@ using mod3 = PseudoRegister<    // Static
     ProxySlot<Redirector<&RegisterState::crep>, 15, 1>
 >;
 
-using st0 = PseudoRegister< // Dynamic
+using st0 = PseudoRegister<
     ProxySlot<Redirector<&RegisterState::sat>, 0, 1>,
     ProxySlot<Redirector<&RegisterState::ie>, 1, 1>,
     ProxySlot<ArrayRedirector<3, &RegisterState::im, 0>, 2, 1>,
@@ -619,13 +619,13 @@ using st0 = PseudoRegister< // Dynamic
     ProxySlot<Redirector<&RegisterState::fz>, 11, 1>,
     ProxySlot<AccEProxy<0>, 12, 4>
 >;
-using st1 = PseudoRegister< // Dynamic
+using st1 = PseudoRegister<
     ProxySlot<Redirector<&RegisterState::page>, 0, 8>,
     // 8, 9: reserved
     ProxySlot<ArrayRedirector<2, &RegisterState::ps, 0>, 10, 2>,
     ProxySlot<AccEProxy<1>, 12, 4>
 >;
-using st2 = PseudoRegister< // Dynamic
+using st2 = PseudoRegister<
     ProxySlot<ArrayRedirector<8, &RegisterState::m, 0>, 0, 1>,
     ProxySlot<ArrayRedirector<8, &RegisterState::m, 1>, 1, 1>,
     ProxySlot<ArrayRedirector<8, &RegisterState::m, 2>, 2, 1>,
@@ -653,7 +653,7 @@ using icr = PseudoRegister<
 >;
 
 template<unsigned index>
-using ar = PseudoRegister< // Static
+using ar = PseudoRegister<
     ProxySlot<ArrayRedirector<4, &RegisterState::arstep, index * 2 + 1>, 0, 3>,
     ProxySlot<ArrayRedirector<4, &RegisterState::aroffset, index * 2 + 1>, 3, 2>,
     ProxySlot<ArrayRedirector<4, &RegisterState::arstep, index * 2>, 5, 3>,
@@ -666,7 +666,7 @@ using ar0 = ar<0>;
 using ar1 = ar<1>;
 
 template<unsigned index>
-using arp = PseudoRegister< // Static
+using arp = PseudoRegister<
     ProxySlot<ArrayRedirector<4, &RegisterState::arpstepi, index>, 0, 3>,
     ProxySlot<ArrayRedirector<4, &RegisterState::arpoffseti, index>, 3, 2>,
     ProxySlot<ArrayRedirector<4, &RegisterState::arpstepj, index>, 5, 3>,

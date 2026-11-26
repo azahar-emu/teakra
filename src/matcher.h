@@ -3,9 +3,6 @@
 #include <algorithm>
 #include <functional>
 #include <vector>
-#include <sstream>
-#include <string>
-#include <unordered_map>
 #include "common_types.h"
 #include "crash.h"
 
@@ -25,11 +22,7 @@ public:
     using handler_function = std::function<handler_return_type(Visitor&, u16, u16)>;
 
     Matcher(const char* const name, u16 mask, u16 expected, bool expanded, handler_function func)
-        : name{name}, mask{mask}, expected{expected}, expanded{expanded}, fn{std::move(func)} {
-        std::stringstream stream;
-        stream << name << " 0x" << std::hex << expected;
-        identifier = stream.str();
-    }
+        : name{name}, mask{mask}, expected{expected}, expanded{expanded}, fn{std::move(func)} {}
 
     static Matcher AllMatcher(handler_function func) {
         return Matcher("*", 0, 0, false, std::move(func));
@@ -67,7 +60,6 @@ private:
     u16 mask;
     u16 expected;
     bool expanded;
-    std::string identifier;
     handler_function fn;
     std::vector<Rejector> rejectors;
 };

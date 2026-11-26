@@ -27,11 +27,12 @@ struct Teakra::Impl {
     Ahbm ahbm;
     Dma dma{shared_memory, ahbm};
     MMIORegion mmio{miu, icu, apbp_from_cpu, apbp_from_dsp, timer, dma, ahbm, btdmp};
-    MemoryInterface memory_interface{shared_memory, miu, mmio};
+    MemoryInterface memory_interface{shared_memory, miu};
     Processor processor;
 
-    Impl(bool use_jit, u8* dsp_memory)
-        : shared_memory{dsp_memory}, processor(core_timing, memory_interface, use_jit) {
+    Impl(u8* dsp_memory, bool use_jit)
+        : shared_memory{dsp_memory}, processor{core_timing, memory_interface, use_jit} {
+        memory_interface.SetMMIO(mmio);
         using namespace std::placeholders;
         icu.SetInterruptHandler(std::bind(&Processor::SignalInterrupt, &processor, _1),
                                 std::bind(&Processor::SignalVectoredInterrupt, &processor, _1, _2));
@@ -66,18 +67,15 @@ struct Teakra::Impl {
 };
 
 Teakra::Teakra(const UserConfig& config)
-    : impl_jit(std::make_unique<Impl>(true, config.dsp_memory)),
-      impl_interp(std::make_unique<Impl>(false, config.dsp_memory)),
-      impl(config.use_jit ? impl_jit.get() : impl_interp.get()), use_jit(config.use_jit) {}
-
+    : impl(std::make_unique<Impl>(config.dsp_memory, config.use_jit)) {}
 Teakra::~Teakra() = default;
+
+bool Teakra::IsJitSupported() {
+    return Processor::IsJitSupported();
+}
 
 void Teakra::Reset() {
     impl->Reset();
-}
-
-Processor& Teakra::GetProcessor() {
-    return impl->processor;
 }
 
 uint8_t* Teakra::GetDspMemory() {
@@ -96,8 +94,8 @@ const RegisterState& Teakra::GetRegisterState() const {
     return impl->processor.GetRegisterState();
 }
 
-u32 Teakra::Run(unsigned cycle) {
-    return impl->processor.Run(cycle, &impl_interp->processor.Interp());
+void Teakra::Run(unsigned cycle) {
+    impl->processor.Run(cycle);
 }
 
 bool Teakra::SendDataIsEmpty(std::uint8_t index) const {
@@ -116,14 +114,14 @@ std::uint16_t Teakra::PeekRecvData(std::uint8_t index) {
     return impl->apbp_from_dsp.PeekData(index);
 }
 void Teakra::SetRecvDataHandler(std::uint8_t index, std::function<void()> handler) {
-    impl->apbp_from_dsp.SetDataHandler(index, handler);
+    impl->apbp_from_dsp.SetDataHandler(index, std::move(handler));
 }
 
 void Teakra::SetSemaphore(std::uint16_t value) {
     impl->apbp_from_cpu.SetSemaphore(value);
 }
 void Teakra::SetSemaphoreHandler(std::function<void()> handler) {
-    impl->apbp_from_dsp.SetSemaphoreHandler(handler);
+    impl->apbp_from_dsp.SetSemaphoreHandler(std::move(handler));
 }
 std::uint16_t Teakra::GetSemaphore() const {
     return impl->apbp_from_dsp.GetSemaphore();
@@ -135,16 +133,14 @@ void Teakra::MaskSemaphore(std::uint16_t value) {
     impl->apbp_from_dsp.MaskSemaphore(value);
 }
 void Teakra::SetAHBMCallback(const AHBMCallback& callback) {
-    impl->ahbm.SetExternalMemoryCallback(callback.read8, callback.write8,
-        callback.read16, callback.write16,
-        callback.read32, callback.write32);
+    impl->ahbm.SetExternalMemoryCallback(callback.read8, callback.write8, callback.read16,
+                                         callback.write16, callback.read32, callback.write32);
 }
 
 std::uint16_t Teakra::AHBMGetUnitSize(std::uint16_t i) const {
     return impl->ahbm.GetUnitSize(i);
 }
 std::uint16_t Teakra::AHBMGetDirection(std::uint16_t i) const {
-    impl_interp->ahbm.GetDirection(i);
     return impl->ahbm.GetDirection(i);
 }
 std::uint16_t Teakra::AHBMGetDmaChannel(std::uint16_t i) const {
@@ -165,7 +161,7 @@ void Teakra::AHBMWrite32(std::uint32_t addr, std::uint32_t value) {
 }
 
 void Teakra::SetAudioCallback(std::function<void(std::array<s16, 2>)> callback) {
-    impl->btdmp[0].SetAudioCallback(callback);
+    impl->btdmp[0].SetAudioCallback(std::move(callback));
 }
 
 std::uint16_t Teakra::ProgramRead(std::uint32_t address) const {
@@ -200,7 +196,6 @@ std::uint16_t Teakra::DMAChan0GetSrcHigh() {
     impl->dma.ActivateChannel(active_bak);
     return ret;
 }
-
 std::uint16_t Teakra::DMAChan0GetDstHigh() {
     u16 active_bak = impl->dma.GetActiveChannel();
     impl->dma.ActivateChannel(0);

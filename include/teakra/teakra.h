@@ -23,19 +23,20 @@ struct UserConfig {
     // DSP memory. By default set to nullptr. If it stays nullptr then Teakra will create its own
     // DSP memory and retain ownership of it. Otherwise, the user will own it.
     std::uint8_t* dsp_memory = nullptr;
+    // Use the x86-64 JIT. Ignored when IsJitSupported() is false.
     bool use_jit = false;
 };
 
 static constexpr std::uint32_t DspMemorySize = 0x80000;
-
-class Processor;
 
 class Teakra {
 public:
     Teakra(const UserConfig& config);
     ~Teakra();
 
-    Processor& GetProcessor();
+    // Whether the JIT is built in and the host CPU can run it.
+    static bool IsJitSupported();
+
     void Reset();
 
     uint8_t* GetDspMemory();
@@ -84,7 +85,7 @@ public:
     void AHBMWrite32(std::uint32_t addr, std::uint32_t value);
 
     // core
-    std::uint32_t Run(std::uint32_t cycle);
+    void Run(unsigned cycle);
 
     void SetAHBMCallback(const AHBMCallback& callback);
 
@@ -92,9 +93,6 @@ public:
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_jit;
-    std::unique_ptr<Impl> impl_interp;
-    Impl* impl;
-    bool use_jit;
+    std::unique_ptr<Impl> impl;
 };
 } // namespace Teakra

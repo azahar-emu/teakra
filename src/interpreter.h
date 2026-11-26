@@ -1,5 +1,4 @@
 #pragma once
-#include <utility>
 #include <atomic>
 #include <stdexcept>
 #include <tuple>
@@ -13,7 +12,6 @@
 #include "decoder.h"
 #include "memory_interface.h"
 #include "operand.h"
-#include "mmio.h"
 #include "register.h"
 
 namespace Teakra {
@@ -55,16 +53,13 @@ public:
     void SetPC(u32 new_pc) {
         ASSERT(new_pc < 0x40000);
         regs.pc = new_pc;
-        compiling = false;
     }
 
     void undefined(u16 opcode) {
         UNREACHABLE();
     }
 
-    bool compiling = false;
-
-    u32 Run(u64 cycles) {
+    void Run(u64 cycles) {
         idle = false;
         for (u64 i = 0; i < cycles; ++i) {
             if (idle) {
@@ -88,33 +83,7 @@ public:
                 regs.ipv = 1;
             }
 
-            u16 opcode = mem.ProgramRead((regs.pc++) | (regs.prpage << 18));
-            auto& decoder = decoders[opcode];
-            u16 expand_value = 0;
-            if (decoder.NeedExpansion()) {
-                expand_value = mem.ProgramRead((regs.pc++) | (regs.prpage << 18));
-            }
-
-            if (regs.rep) {
-                if (regs.repc == 0) {
-                    regs.rep = false;
-                } else {
-                    --regs.repc;
-                    --regs.pc;
-                }
-            }
-
-            if (regs.lp && regs.bkrep_stack[regs.bcn - 1].end + 1 == regs.pc) {
-                if (regs.bkrep_stack[regs.bcn - 1].lc == 0) {
-                    --regs.bcn;
-                    regs.lp = regs.bcn != 0;
-                } else {
-                    --regs.bkrep_stack[regs.bcn - 1].lc;
-                    regs.pc = regs.bkrep_stack[regs.bcn - 1].start;
-                }
-            }
-
-            decoder.call(*this, opcode, expand_value);
+            Step();
 
             // I am not sure if a single-instruction loop is interruptable and how it is handled,
             // so just disable interrupt for it for now.
@@ -148,93 +117,37 @@ public:
 
             core_timing.Tick();
         }
-        return 0;
     }
 
-    void RunWithJit(u64 cycles) {
-        if (idle) {
-            u64 skipped = core_timing.Skip(total_cycles - 1);
-            total_cycles -= skipped;
+    // Executes one instruction, without interrupts or timing.
+    void Step() {
+        u16 opcode = mem.ProgramRead((regs.pc++) | (regs.prpage << 18));
+        auto& decoder = decoders[opcode];
+        u16 expand_value = 0;
+        if (decoder.NeedExpansion()) {
+            expand_value = mem.ProgramRead((regs.pc++) | (regs.prpage << 18));
+        }
 
-            // Skip additional tick so to let components fire interrupts
-            if (total_cycles > 1) {
-                total_cycles--;
-                core_timing.Tick();
+        if (regs.rep) {
+            if (regs.repc == 0) {
+                regs.rep = false;
+            } else {
+                --regs.repc;
+                --regs.pc;
             }
         }
 
-        for (std::size_t i = 0; i < 3; ++i) {
-            if (interrupt_pending[i].exchange(false)) {
-                regs.ip[i] = 1;
+        if (regs.lp && regs.bkrep_stack[regs.bcn - 1].end + 1 == regs.pc) {
+            if (regs.bkrep_stack[regs.bcn - 1].lc == 0) {
+                --regs.bcn;
+                regs.lp = regs.bcn != 0;
+            } else {
+                --regs.bkrep_stack[regs.bcn - 1].lc;
+                regs.pc = regs.bkrep_stack[regs.bcn - 1].start;
             }
         }
 
-        if (vinterrupt_pending.exchange(false)) {
-            regs.ipv = 1;
-        }
-
-        for (u64 i = 0; i < cycles; ++i) {
-            u16 opcode = mem.ProgramRead((regs.pc++) | (regs.prpage << 18));
-            auto& decoder = decoders[opcode];
-            u16 expand_value = 0;
-            if (decoder.NeedExpansion()) {
-                expand_value = mem.ProgramRead((regs.pc++) | (regs.prpage << 18));
-            }
-
-            if (regs.rep) {
-                if (regs.repc == 0) {
-                    regs.rep = false;
-                } else {
-                    --regs.repc;
-                    --regs.pc;
-                }
-            }
-
-            if (regs.lp && regs.bkrep_stack[regs.bcn - 1].end + 1 == regs.pc) {
-                if (regs.bkrep_stack[regs.bcn - 1].lc == 0) {
-                    --regs.bcn;
-                    regs.lp = regs.bcn != 0;
-                } else {
-                    --regs.bkrep_stack[regs.bcn - 1].lc;
-                    regs.pc = regs.bkrep_stack[regs.bcn - 1].start;
-                }
-            }
-
-            decoder.call(*this, opcode, expand_value);
-        }
-
-        // I am not sure if a single-instruction loop is interruptable and how it is handled,
-        // so just disable interrupt for it for now.
-        if (regs.ie && !regs.rep) {
-            bool interrupt_handled = false;
-            for (u32 i = 0; i < regs.im.size(); ++i) {
-                if (regs.im[i] && regs.ip[i]) {
-                    regs.ip[i] = 0;
-                    regs.ie = 0;
-                    PushPC();
-                    regs.pc = 0x0006 + i * 8;
-                    idle = false;
-                    interrupt_handled = true;
-                    if (regs.ic[i]) {
-                        ContextStore();
-                    }
-                    break;
-                }
-            }
-            if (!interrupt_handled && regs.imv && regs.ipv) {
-                regs.ipv = 0;
-                regs.ie = 0;
-                PushPC();
-                regs.pc = vinterrupt_address;
-                idle = false;
-                if (vinterrupt_context_switch) {
-                    ContextStore();
-                }
-            }
-        }
-
-        core_timing.Tick(cycles);
-        total_cycles -= cycles;
+        decoder.call(*this, opcode, expand_value);
     }
 
     void SignalInterrupt(u32 i) {
@@ -1198,7 +1111,6 @@ public:
                 idle = true;
             }
         }
-        compiling = false;
     }
 
     void break_() {
@@ -1227,7 +1139,6 @@ public:
             PushPC();
             regs.pc += addr.Relative32();
         }
-        compiling = false;
     }
 
     void ContextStore() {
@@ -3024,11 +2935,10 @@ public:
         regs.ext[3] = a.Signed16();
     }
 
-public:
+private:
     CoreTiming& core_timing;
     RegisterState& regs;
     MemoryInterface& mem;
-    s32 total_cycles = 0;
 
     std::array<std::atomic<bool>, 3> interrupt_pending{{false, false, false}};
     std::atomic<bool> vinterrupt_pending{false};

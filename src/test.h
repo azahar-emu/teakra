@@ -28,7 +28,7 @@ struct State {
     std::array<u16, TestSpaceSize> test_space_y;
 };
 
-static_assert(std::is_trivially_copyable<State>::value);
+static_assert(std::is_trivially_copyable_v<State>);
 
 struct TestCase {
     State before, after;
@@ -36,7 +36,7 @@ struct TestCase {
 };
 
 static_assert(sizeof(TestCase) == 4312);
-static_assert(std::is_trivially_copyable<TestCase>::value);
+static_assert(std::is_trivially_copyable_v<TestCase>);
 
 struct fclose_deleter {
     void operator()(std::FILE* f) const {

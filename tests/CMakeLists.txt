@@ -1,19 +1,9 @@
 add_executable(teakra_tests
-    #dma.cpp
-    #btdmp.cpp
-    #interpreter.cpp
+    dma.cpp
+    btdmp.cpp
+    interpreter.cpp
     main.cpp
-    #timer.cpp
-    #firmware.cpp
-    dsp1.h
-    audio_types.h
-    lle.h
-    audio.h
-    bit_field.h
-    common_funcs.h
-    dsp.h
-    swap.h
-    audio.cpp
+    timer.cpp
 )
 
 target_include_directories(teakra_tests PRIVATE ../include/teakra/impl/)
